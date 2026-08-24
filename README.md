@@ -166,15 +166,6 @@ python scripts/make_paper_tables.py
 
 The generated LaTeX rows can be copied into the camera-ready results table after manual verification.
 
-## Preliminary MeditCom paper
-
-The WF-IoT manuscript should explicitly cite the preliminary work:
-
-C. Matta, D. Giusto, and M. Anedda, **“FireTransformer: An Encoder-Only Transformer for Early Wildfire Detection in IoT Sensor Networks,”** 2026 IEEE International Mediterranean Conference on Communications and Networking (MeditCom), pp. 1–6, 2026.
-
-The WF-IoT work is positioned as an extension through horizon-based warning,
-leakage-controlled cross-node validation, repeated-run stability analysis, horizon
-sensitivity, and computational/energy edge characterization.
 
 ## Repository structure
 
