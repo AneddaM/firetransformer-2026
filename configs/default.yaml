@@ -1,0 +1,70 @@
+seed: 42
+window: 60
+horizon: 15
+rolling_window: 5
+val_fraction_files: 0.25
+threshold_objective: f1
+
+training:
+  batch_size: 256
+  max_epochs: 150
+  patience: 15
+  warmup_epochs: 10
+  weight_decay: 0.01
+  num_workers: 0
+  gaussian_noise_std: 0.01
+  time_warp_prob: 0.15
+
+loss:
+  focal_gamma: 2.0
+  focal_alpha: 0.75
+  label_smoothing: 0.05
+
+models:
+  ft32:
+    type: transformer
+    d_model: 32
+    n_heads: 2
+    n_layers: 2
+    d_ff: 64
+    dropout: 0.1
+    lr: 0.001
+  ft64:
+    type: transformer
+    d_model: 64
+    n_heads: 4
+    n_layers: 3
+    d_ff: 128
+    dropout: 0.1
+    lr: 0.001
+  ft128:
+    type: transformer
+    d_model: 128
+    n_heads: 4
+    n_layers: 3
+    d_ff: 256
+    dropout: 0.1
+    lr: 0.0003
+  bilstm_bce:
+    type: bilstm
+    hidden_size: 96
+    num_layers: 2
+    dropout: 0.1
+    lr: 0.001
+    loss: bce
+  bilstm_fl:
+    type: bilstm
+    hidden_size: 96
+    num_layers: 2
+    dropout: 0.1
+    lr: 0.001
+    loss: focal
+
+schema:
+  feature_aliases:
+    temperature: [temperature, temp, temperature_c, "temperature[c]", t]
+    humidity: [humidity, rh, relative_humidity, "humidity[%]"]
+    pressure: [pressure, pressure_hpa, atmospheric_pressure, "pressure[hpa]"]
+    gas_resistance: [gas_resistance, gasresistance, gas_res, resistance, gas, gas_ohm, gas_resistance_ohm]
+  fire_aliases: [fire, fire_alarm, label, target, smoke, class, annotation]
+  timestamp_aliases: [timestamp, time, datetime, utc, date_time]
