@@ -1,4 +1,4 @@
-# FireTransformer — WF-IoT 2026 reproducibility revision
+# FireTransformer — WF-IoT 2026 
 
 Code and experimental protocol for the camera-ready revision of **“Edge-Aware
 FireTransformer for Horizon-Based Early Wildfire Warning in IoT Sensor Networks.”**
