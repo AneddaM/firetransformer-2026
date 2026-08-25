@@ -90,14 +90,30 @@ def main():
     df = pd.DataFrame(rows)
     df.to_csv(outdir / "lono_runs.csv", index=False)
     metric_cols = [c for c in ["precision","recall","f1","auc_roc","auc_pr","coverage","lead_mean_s","false_alarm_rate","missed_detection_rate"] if c in df]
-    summary = df.groupby("model")[metric_cols].agg(["mean","std"])
-    summary.to_csv(outdir / "lono_macro_summary.csv")
-    node_summary = df.groupby(["model","outer_test_node"])[metric_cols].agg(["mean","std"])
+    //summary = df.groupby("model")[metric_cols].agg(["mean","std"])
+    //summary.to_csv(outdir / "lono_macro_summary.csv")
+    //node_summary = df.groupby(["model","outer_test_node"])[metric_cols].agg(["mean","std"])
+    //node_summary.to_csv(outdir / "lono_per_node_summary.csv")
+    
+    # Per-node statistics across independent seeds
+    node_summary = (df.groupby(["model", "outer_test_node"])[metric_cols].agg(["mean", "std"]))
     node_summary.to_csv(outdir / "lono_per_node_summary.csv")
+
+    # First average across seeds within each held-out node
+    node_means = (df.groupby(["model", "outer_test_node"])[metric_cols].mean().reset_index())
+    node_means.to_csv(outdir / "lono_per_node_means.csv",index=False)
+
+    # Macro mean and BETWEEN-NODE standard deviation
+    macro_summary = (node_means.groupby("model")[metric_cols].agg(["mean", "std"]))
+    macro_summary.to_csv(outdir / "lono_macro_summary.csv")
+
+    # Mean within-node run-to-run variability across seeds.
+    # This is kept separate from between-node variability.
+    seed_std_by_node = (df.groupby(["model", "outer_test_node"])[metric_cols].std().reset_index())
+    seed_variability = (seed_std_by_node.groupby("model")[metric_cols].mean())
+    seed_variability.to_csv(outdir / "lono_seed_variability.csv")
     print(f"\nSaved: {outdir / 'lono_runs.csv'}")
     print(f"Saved: {outdir / 'lono_macro_summary.csv'}")
     print(f"Saved: {outdir / 'lono_per_node_summary.csv'}")
-
-
-if __name__ == "__main__":
+    if __name__ == "__main__":
     main()
