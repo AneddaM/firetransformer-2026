@@ -72,3 +72,6 @@ def main():
     horizon_seed_std = (df.groupby(["model", "horizon", "outer_test_node"])[metrics].std().reset_index())
     horizon_seed_std.to_csv(outdir / "horizon_seed_std_by_node.csv",index=False,)
     print(f"Saved results to {outdir}")
+
+    if __name__ == "__main__":
+    main()
