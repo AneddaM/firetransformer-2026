@@ -12,7 +12,7 @@ def main():
     ap = argparse.ArgumentParser(
         description=(
             "Analytical complexity for the FireTransformer "
-            "configurations used in the WF-IoT evaluation"
+            "configurations considered in the WF-IoT study"
         )
     )
     ap.add_argument("--config", default="configs/default.yaml")
@@ -22,7 +22,7 @@ def main():
     cfg = load_config(args.config)
     rows = []
 
-    for name in ["ft64", "ft128"]:
+    for name in ["ft32", "ft64", "ft128"]:
         model_cfg = cfg["models"][name]
         model = build_model(
             model_cfg,
