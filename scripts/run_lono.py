@@ -9,14 +9,14 @@ import torch
 
 from fire_transformer.config import load_config
 from fire_transformer.data import DatasetCatalog, build_fold, to_loader
-from fire_transformer.model import build_model
-from fire_transformer.training import train_model
 from fire_transformer.evaluation import (
-    collect_probabilities,
     choose_threshold,
+    collect_probabilities,
     compute_metrics,
 )
-from fire_transformer.utils import seed_everything, ensure_dir, device_from_arg
+from fire_transformer.model import build_model
+from fire_transformer.training import train_model
+from fire_transformer.utils import device_from_arg, ensure_dir, seed_everything
 
 
 def main() -> None:
@@ -33,7 +33,7 @@ def main() -> None:
         "--models",
         nargs="+",
         default=["ft64"],
-        choices=["ft32", "ft64", "ft128", "bilstm_bce", "bilstm_fl"],
+        choices=["ft64", "ft128", "bilstm_bce", "bilstm_fl"],
     )
     ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3])
     ap.add_argument("--device", default="auto")
@@ -65,7 +65,7 @@ def main() -> None:
     missing = sorted(set(expected_nodes) - set(catalog.nodes))
     if missing:
         raise ValueError(
-            f"Full LONO requires NODO1...NODO5. "
+            "Full LONO requires NODO1...NODO5. "
             f"Missing: {missing}; found: {catalog.nodes}"
         )
 
@@ -100,9 +100,6 @@ def main() -> None:
             )
 
             n_features = train_b.X.shape[-1]
-
-            # Canonical raw feature ordering:
-            # temperature, humidity, pressure, gas resistance.
             gas_idx = 3
 
             positive = float((train_b.y == 1).sum())
@@ -151,26 +148,21 @@ def main() -> None:
                     use_augmentation=True,
                 )
 
-                # Threshold calibration uses INNER validation only.
-                y_val, p_val = collect_probabilities(
-                    model, val_loader, device
-                )
+                y_val, p_val = collect_probabilities(model, val_loader, device)
                 threshold, threshold_score = choose_threshold(
                     y_val,
                     p_val,
                     cfg["threshold_objective"],
                 )
 
-                # Final evaluation uses the untouched OUTER held-out node.
-                y_test, p_test = collect_probabilities(
-                    model, test_loader, device
-                )
+                y_test, p_test = collect_probabilities(model, test_loader, device)
                 metrics = compute_metrics(
                     y_test,
                     p_test,
                     threshold,
                     test_b.window_end_ts,
                     test_b.onset_ts,
+                    file_ids=test_b.file_ids,
                 )
 
                 metrics.update(
@@ -225,6 +217,8 @@ def main() -> None:
                         "f1",
                         "recall",
                         "coverage",
+                        "events_total",
+                        "events_covered",
                         "lead_mean_s",
                     ]
                 }
@@ -247,109 +241,68 @@ def main() -> None:
         "false_alarm_rate",
         "missed_detection_rate",
     ]
-    metric_cols = [
-        c for c in candidate_metrics if c in df.columns
-    ]
+    metric_cols = [c for c in candidate_metrics if c in df.columns]
 
     if not metric_cols:
         raise RuntimeError("No expected metric columns were produced.")
 
-    # ================================================================
-    # Hierarchical aggregation
-    #
-    # 1. Average independent seeds WITHIN each held-out node.
-    # 2. Compute macro mean across the five node-wise means.
-    # 3. sigma_node = sample std across the five node-wise means.
-    # 4. Keep run-to-run seed variability separate.
-    # ================================================================
+    # Hierarchical aggregation:
+    # 1) average seeds within each held-out node;
+    # 2) macro mean across node-wise means;
+    # 3) sigma_node = sample std across node-wise means;
+    # 4) keep seed variability separate.
 
-    # Per-node mean ± std across seeds.
     node_summary = (
-        df.groupby(
-            ["model", "outer_test_node"]
-        )[metric_cols]
+        df.groupby(["model", "outer_test_node"])[metric_cols]
         .agg(["mean", "std"])
         .sort_index()
     )
-    node_summary.to_csv(
-        outdir / "lono_per_node_summary.csv"
-    )
+    node_summary.to_csv(outdir / "lono_per_node_summary.csv")
 
-    # One seed-averaged estimate for each held-out node.
     node_means = (
-        df.groupby(
-            ["model", "outer_test_node"],
-            as_index=False,
-        )[metric_cols]
+        df.groupby(["model", "outer_test_node"], as_index=False)[metric_cols]
         .mean()
-        .sort_values(
-            ["model", "outer_test_node"]
-        )
+        .sort_values(["model", "outer_test_node"])
     )
     node_means.to_csv(
         outdir / "lono_per_node_means.csv",
         index=False,
     )
 
-    # Macro mean ± BETWEEN-NODE sample standard deviation.
     macro_summary = (
         node_means.groupby("model")[metric_cols]
         .agg(["mean", "std"])
         .sort_index()
     )
-    macro_summary.to_csv(
-        outdir / "lono_macro_summary.csv"
-    )
+    macro_summary.to_csv(outdir / "lono_macro_summary.csv")
 
-    # Seed-level variability, kept separate from sigma_node.
     seed_std_by_node = (
-        df.groupby(
-            ["model", "outer_test_node"]
-        )[metric_cols]
+        df.groupby(["model", "outer_test_node"])[metric_cols]
         .std()
         .reset_index()
-        .sort_values(
-            ["model", "outer_test_node"]
-        )
+        .sort_values(["model", "outer_test_node"])
     )
     seed_std_by_node.to_csv(
         outdir / "lono_seed_std_by_node.csv",
         index=False,
     )
 
-    # Mean within-node seed variability for each model.
     seed_variability = (
-        seed_std_by_node.groupby(
-            "model"
-        )[metric_cols]
+        seed_std_by_node.groupby("model")[metric_cols]
         .mean()
         .sort_index()
     )
-    seed_variability.to_csv(
-        outdir / "lono_seed_variability.csv"
-    )
+    seed_variability.to_csv(outdir / "lono_seed_variability.csv")
 
-    print(f"\nSaved: {outdir / 'lono_runs.csv'}")
-    print(
-        f"Saved: "
-        f"{outdir / 'lono_per_node_summary.csv'}"
-    )
-    print(
-        f"Saved: "
-        f"{outdir / 'lono_per_node_means.csv'}"
-    )
-    print(
-        f"Saved: "
-        f"{outdir / 'lono_macro_summary.csv'}"
-    )
-    print(
-        f"Saved: "
-        f"{outdir / 'lono_seed_std_by_node.csv'}"
-    )
-    print(
-        f"Saved: "
-        f"{outdir / 'lono_seed_variability.csv'}"
-    )
+    for filename in [
+        "lono_runs.csv",
+        "lono_per_node_summary.csv",
+        "lono_per_node_means.csv",
+        "lono_macro_summary.csv",
+        "lono_seed_std_by_node.csv",
+        "lono_seed_variability.csv",
+    ]:
+        print(f"Saved: {outdir / filename}")
 
 
 if __name__ == "__main__":

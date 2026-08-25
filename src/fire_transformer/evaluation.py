@@ -1,47 +1,146 @@
 from __future__ import annotations
+
 import time
+
 import numpy as np
 import torch
 from sklearn.metrics import (
-    roc_auc_score, precision_score, recall_score, f1_score, accuracy_score,
-    confusion_matrix, average_precision_score
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
 )
 
 
 def choose_threshold(y, p, objective="f1"):
     thresholds = np.linspace(0.01, 0.99, 99)
     best_t, best_s = 0.5, -np.inf
+
     for t in thresholds:
         pred = (p >= t).astype(int)
+
         if objective == "f1":
-            s = f1_score(y, pred, zero_division=0)
+            score = f1_score(y, pred, zero_division=0)
         elif objective == "recall":
-            s = recall_score(y, pred, zero_division=0)
+            score = recall_score(y, pred, zero_division=0)
         else:
-            raise ValueError("threshold objective must be 'f1' or 'recall'")
-        if s > best_s:
-            best_s, best_t = s, float(t)
+            raise ValueError(
+                "threshold objective must be 'f1' or 'recall'"
+            )
+
+        if score > best_s:
+            best_s, best_t = score, float(t)
+
     return best_t, best_s
 
 
-def event_coverage(pred, onset_ts):
-    valid = np.isfinite(onset_ts)
-    if not valid.any():
+def _event_groups(onset_ts, file_ids=None):
+    """Group warning windows by physical event.
+
+    Event identity is (acquisition_file, onset_timestamp), so independent
+    acquisitions with equal/restarted timestamps cannot be merged.
+    """
+    onset_ts = np.asarray(onset_ts, dtype=np.float64)
+    n = len(onset_ts)
+
+    if file_ids is None:
+        file_ids = np.full(
+            n,
+            "__single_acquisition__",
+            dtype=object,
+        )
+    else:
+        file_ids = np.asarray(file_ids, dtype=object)
+        if len(file_ids) != n:
+            raise ValueError(
+                "file_ids and onset_ts must have the same length"
+            )
+
+    groups = {}
+
+    for index in np.flatnonzero(np.isfinite(onset_ts)):
+        key = (
+            str(file_ids[index]),
+            round(float(onset_ts[index]), 6),
+        )
+        groups.setdefault(key, []).append(int(index))
+
+    return groups
+
+
+def event_coverage(pred, onset_ts, file_ids=None):
+    groups = _event_groups(onset_ts, file_ids)
+
+    if not groups:
         return np.nan
-    # Multiple windows may point to the same physical onset. Round to microseconds before unique.
-    events = np.unique(np.round(onset_ts[valid], 6))
-    covered = 0
-    for e in events:
-        mask = valid & (np.round(onset_ts, 6) == e)
-        covered += int(np.any(pred[mask] == 1))
-    return covered / len(events) if len(events) else np.nan
+
+    pred = np.asarray(pred)
+
+    covered = sum(
+        int(
+            np.any(
+                pred[np.asarray(indices, dtype=int)] == 1
+            )
+        )
+        for indices in groups.values()
+    )
+
+    return covered / len(groups)
 
 
-def lead_time_stats(pred, y, window_end_ts, onset_ts):
-    mask = (pred == 1) & (y == 1) & np.isfinite(onset_ts)
-    if not mask.any():
-        return {"lead_mean_s": np.nan, "lead_median_s": np.nan, "lead_p25_s": np.nan, "lead_p75_s": np.nan}
-    lead = onset_ts[mask] - window_end_ts[mask]
+def lead_time_stats(
+    pred,
+    y,
+    window_end_ts,
+    onset_ts,
+    file_ids=None,
+):
+    """Compute one lead-time value per covered physical onset.
+
+    For each event, the lead time is based on the earliest correctly warning
+    positive window before that physical 0->1 onset.
+    """
+    pred = np.asarray(pred)
+    y = np.asarray(y)
+    window_end_ts = np.asarray(window_end_ts, dtype=np.float64)
+    onset_ts = np.asarray(onset_ts, dtype=np.float64)
+
+    groups = _event_groups(onset_ts, file_ids)
+    event_leads = []
+
+    for indices in groups.values():
+        idx = np.asarray(indices, dtype=int)
+
+        correct_warning = idx[
+            (pred[idx] == 1) &
+            (y[idx] == 1)
+        ]
+
+        if correct_warning.size == 0:
+            continue
+
+        event_onset = float(onset_ts[correct_warning[0]])
+        earliest_warning = float(
+            np.min(window_end_ts[correct_warning])
+        )
+
+        event_leads.append(
+            event_onset - earliest_warning
+        )
+
+    if not event_leads:
+        return {
+            "lead_mean_s": np.nan,
+            "lead_median_s": np.nan,
+            "lead_p25_s": np.nan,
+            "lead_p75_s": np.nan,
+        }
+
+    lead = np.asarray(event_leads, dtype=np.float64)
+
     return {
         "lead_mean_s": float(np.mean(lead)),
         "lead_median_s": float(np.median(lead)),
@@ -50,26 +149,104 @@ def lead_time_stats(pred, y, window_end_ts, onset_ts):
     }
 
 
-def compute_metrics(y, p, threshold, window_end_ts=None, onset_ts=None):
+def compute_metrics(
+    y,
+    p,
+    threshold,
+    window_end_ts=None,
+    onset_ts=None,
+    file_ids=None,
+):
     pred = (p >= threshold).astype(int)
-    tn, fp, fn, tp = confusion_matrix(y, pred, labels=[0, 1]).ravel()
+
+    tn, fp, fn, tp = confusion_matrix(
+        y,
+        pred,
+        labels=[0, 1],
+    ).ravel()
+
     out = {
         "threshold": float(threshold),
         "accuracy": float(accuracy_score(y, pred)),
-        "precision": float(precision_score(y, pred, zero_division=0)),
-        "recall": float(recall_score(y, pred, zero_division=0)),
-        "f1": float(f1_score(y, pred, zero_division=0)),
-        "auc_roc": float(roc_auc_score(y, p)) if len(np.unique(y)) > 1 else np.nan,
-        "auc_pr": float(average_precision_score(y, p)) if len(np.unique(y)) > 1 else np.nan,
-        "specificity": float(tn / (tn + fp)) if (tn + fp) else np.nan,
-        "false_alarm_rate": float(fp / (fp + tn)) if (fp + tn) else np.nan,
-        "missed_detection_rate": float(fn / (fn + tp)) if (fn + tp) else np.nan,
-        "tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp),
+        "precision": float(
+            precision_score(y, pred, zero_division=0)
+        ),
+        "recall": float(
+            recall_score(y, pred, zero_division=0)
+        ),
+        "f1": float(
+            f1_score(y, pred, zero_division=0)
+        ),
+        "auc_roc": (
+            float(roc_auc_score(y, p))
+            if len(np.unique(y)) > 1
+            else np.nan
+        ),
+        "auc_pr": (
+            float(average_precision_score(y, p))
+            if len(np.unique(y)) > 1
+            else np.nan
+        ),
+        "specificity": (
+            float(tn / (tn + fp))
+            if (tn + fp)
+            else np.nan
+        ),
+        "false_alarm_rate": (
+            float(fp / (fp + tn))
+            if (fp + tn)
+            else np.nan
+        ),
+        "missed_detection_rate": (
+            float(fn / (fn + tp))
+            if (fn + tp)
+            else np.nan
+        ),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
     }
+
     if onset_ts is not None:
-        out["coverage"] = float(event_coverage(pred, onset_ts))
-    if window_end_ts is not None and onset_ts is not None:
-        out.update(lead_time_stats(pred, y, window_end_ts, onset_ts))
+        groups = _event_groups(onset_ts, file_ids)
+        out["events_total"] = int(len(groups))
+
+        out["events_covered"] = int(
+            sum(
+                int(
+                    np.any(
+                        pred[
+                            np.asarray(indices, dtype=int)
+                        ] == 1
+                    )
+                )
+                for indices in groups.values()
+            )
+        )
+
+        out["coverage"] = float(
+            event_coverage(
+                pred,
+                onset_ts,
+                file_ids=file_ids,
+            )
+        )
+
+    if (
+        window_end_ts is not None
+        and onset_ts is not None
+    ):
+        out.update(
+            lead_time_stats(
+                pred,
+                y,
+                window_end_ts,
+                onset_ts,
+                file_ids=file_ids,
+            )
+        )
+
     return out
 
 
@@ -77,32 +254,50 @@ def compute_metrics(y, p, threshold, window_end_ts=None, onset_ts=None):
 def collect_probabilities(model, loader, device="cpu"):
     model.eval()
     ys, ps = [], []
+
     for xb, yb in loader:
         logits = model(xb.to(device))
         ys.append(yb.cpu().numpy())
         ps.append(torch.sigmoid(logits).cpu().numpy())
+
     return np.concatenate(ys), np.concatenate(ps)
 
 
 @torch.inference_mode()
-def benchmark_latency(model, sample, device="cpu", warmup=200, iterations=2000):
+def benchmark_latency(
+    model,
+    sample,
+    device="cpu",
+    warmup=200,
+    iterations=2000,
+):
     model.eval().to(device)
     x = sample.to(device)
+
     for _ in range(warmup):
         _ = model(x)
+
     if str(device).startswith("cuda"):
         torch.cuda.synchronize()
+
     times = []
+
     for _ in range(iterations):
         t0 = time.perf_counter_ns()
         _ = model(x)
+
         if str(device).startswith("cuda"):
             torch.cuda.synchronize()
-        times.append((time.perf_counter_ns() - t0) / 1e6)
-    a = np.asarray(times)
+
+        times.append(
+            (time.perf_counter_ns() - t0) / 1e6
+        )
+
+    arr = np.asarray(times)
+
     return {
-        "latency_mean_ms": float(a.mean()),
-        "latency_median_ms": float(np.median(a)),
-        "latency_p95_ms": float(np.percentile(a, 95)),
-        "latency_std_ms": float(a.std()),
+        "latency_mean_ms": float(arr.mean()),
+        "latency_median_ms": float(np.median(arr)),
+        "latency_p95_ms": float(np.percentile(arr, 95)),
+        "latency_std_ms": float(arr.std()),
     }
