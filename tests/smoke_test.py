@@ -131,6 +131,14 @@ def main():
         assert output.shape == (2,)
         assert sum(p.numel() for p in model.parameters()) == 110338
 
+        ft32 = build_model(
+            cfg["models"]["ft32"],
+            n_features=20,
+            gas_feature_index=3,
+        )
+
+        assert sum(p.numel() for p in ft32.parameters()) == 20002
+        
         print("SMOKE TEST PASSED")
 
 
