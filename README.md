@@ -83,6 +83,40 @@ python scripts/run_lono.py \
 
 Outputs include raw runs, per-node summaries, macro summaries, checkpoints and training histories under `runs/lono/`.
 
+### Statistical aggregation convention
+
+For each held-out node, metrics are first averaged across
+the independent training seeds.
+
+Let \(m_{k,r}\) denote a metric obtained for held-out node
+\(k\) and random seed \(r\). The node-wise estimate is
+
+\[
+\bar m_k = \frac{1}{R}\sum_{r=1}^{R}m_{k,r}.
+\]
+
+The reported macro mean is then computed across the five
+node-wise means,
+
+\[
+\mu_{\mathrm{macro}}
+=
+\frac{1}{5}\sum_{k=1}^{5}\bar m_k,
+\]
+
+while \(\sigma_{\mathrm{node}}\) is the sample standard
+deviation of the five node-wise means.
+
+Therefore, the paper reports
+
+\[
+\mu_{\mathrm{macro}} \pm \sigma_{\mathrm{node}},
+\]
+
+which quantifies cross-node variability. Run-to-run
+variability across random seeds is computed separately and
+must not be mixed with between-node variability.
+
 ## 2. Horizon sensitivity
 
 ```bash
