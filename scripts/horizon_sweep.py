@@ -60,9 +60,15 @@ def main():
     df = pd.DataFrame(rows)
     df.to_csv(outdir / "horizon_runs.csv", index=False)
     metrics = ["auc_roc","f1","precision","recall","coverage","lead_mean_s","false_alarm_rate","missed_detection_rate"]
-    df.groupby(["model","horizon"])[metrics].agg(["mean","std"]).to_csv(outdir / "horizon_summary.csv")
+    # First average seeds within each held-out node
+    horizon_node_means = (df.groupby(["model", "horizon", "outer_test_node"],as_index=False,)[metrics].mean())
+    horizon_node_means.to_csv(outdir / "horizon_per_node_means.csv",index=False,)
+
+    # Macro mean ± BETWEEN-NODE standard deviation
+    horizon_summary = (horizon_node_means.groupby(["model", "horizon"])[metrics].agg(["mean", "std"]))
+    horizon_summary.to_csv(outdir / "horizon_summary.csv")
+
+    # Seed variability kept separate
+    horizon_seed_std = (df.groupby(["model", "horizon", "outer_test_node"])[metrics].std().reset_index())
+    horizon_seed_std.to_csv(outdir / "horizon_seed_std_by_node.csv",index=False,)
     print(f"Saved results to {outdir}")
-
-
-if __name__ == "__main__":
-    main()
