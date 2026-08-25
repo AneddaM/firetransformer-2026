@@ -33,7 +33,7 @@ def main() -> None:
         "--models",
         nargs="+",
         default=["ft64"],
-        choices=["ft64", "ft128", "bilstm_bce", "bilstm_fl"],
+        choices=["ft32", "ft64", "ft128", "bilstm_bce", "bilstm_fl"],
     )
     ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3])
     ap.add_argument("--device", default="auto")
