@@ -218,7 +218,4 @@ This repository intentionally contains no estimated or provisional experimental
 results. Only analytical architecture quantities are pre-populated. LONO, horizon,
 latency, power and energy values must come from actual executions or measurements.
 
-## Citation
 
-Use `CITATION.cff` for the software citation and
-`paper/references_wfiot_revision.bib` for paper-related references.
