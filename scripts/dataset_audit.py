@@ -64,8 +64,12 @@ def main():
     evaluable = [a for a in acquisitions if a.pre_onset_samples >= window]
     non_evaluable = [a for a in acquisitions if a.pre_onset_samples < window]
 
-    profiles = sorted(
-        {a.heater_profile for a in acquisitions if a.heater_profile is not None}
+    filename_profile_indices = sorted(
+    {
+        a.filename_profile_index
+        for a in acquisitions
+        if a.filename_profile_index is not None
+    }
     )
     recovery_files = int(sum(np.any(a.states == STATE_POSTFIRE) for a in acquisitions))
 
@@ -74,7 +78,14 @@ def main():
     print("=" * 68)
     print(f"CSV files                         : {len(acquisitions)}")
     print(f"Nodes                             : {len(catalog.nodes)} {catalog.nodes}")
-    print(f"Heater profiles inferred          : {len(profiles)} {profiles}")
+    print(
+        "Acquisition profile indices "
+        f"from filenames : {len(filename_profile_indices)} "
+        f"{filename_profile_indices}"
+    )
+    print(
+        "Documented BME688 heater profiles           : 17"
+    )
     print(f"Raw rows                          : {raw_rows}")
     print(f"Warm-up rows (label 0)            : {warmup_rows}")
     print(f"Annotated rows after warm-up      : {annotated_rows}")
