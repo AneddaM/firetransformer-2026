@@ -53,14 +53,25 @@ def infer_node(path: str | Path) -> str:
         "or rename paths so the node identifier is present."
     )
 
+def infer_filename_profile_index(path: str | Path) -> int | None:
+    """Extract the profile index appearing in the acquisition filename.
 
-def infer_heater_profile(path: str | Path) -> int | None:
-    """Infer a profile identifier from filenames such as `...profilo_12.csv`.
+    This value identifies the `profilo_X` token used in the CSV filename.
+    It must not be interpreted as the global BME688 heater-profile identity:
+    the public acquisition campaign contains 17 documented heater profiles,
+    whereas the filenames use indices 1...4 for the four acquisition files
+    associated with each node.
 
-    Heater-profile identity is metadata only and is not used as a model feature.
+    The filename profile index is metadata only and is never used as a model
+    input feature.
     """
-    m = re.search(r"profilo[\s_\-]*(\d+)", Path(path).stem, flags=re.IGNORECASE)
+    m = re.search(
+        r"profilo[\s_\-]*(\d+)",
+        Path(path).stem,
+        flags=re.IGNORECASE,
+    )
     return int(m.group(1)) if m else None
+
 
 
 def list_csvs(root: str | Path):
@@ -272,7 +283,7 @@ class Acquisition:
     path: Path
     file_id: str
     node: str
-    heater_profile: int | None
+    filename_profile_index: int | None
     raw: pd.DataFrame
     labels: np.ndarray
     states: np.ndarray
