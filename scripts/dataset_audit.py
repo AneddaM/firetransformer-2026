@@ -107,7 +107,7 @@ def main():
             {
                 "file": a.file_id,
                 "node": a.node,
-                "profile": a.heater_profile,
+                "filename_profile_index": a.filename_profile_index,
                 "pre_onset_samples": a.pre_onset_samples,
                 "prefire_duration_s": a.prefire_duration_s,
                 "onset_time_s": a.onset_timestamp,
