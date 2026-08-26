@@ -395,7 +395,7 @@ class DatasetCatalog:
                     path=p,
                     file_id=p.relative_to(self.root).as_posix(),
                     node=infer_node(p),
-                    heater_profile=infer_heater_profile(p),
+                    filename_profile_index=infer_filename_profile_index(p),
                     raw=canonical,
                     labels=labels,
                     states=states,
