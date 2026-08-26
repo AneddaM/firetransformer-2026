@@ -20,7 +20,7 @@ from fire_transformer.utils import device_from_arg, ensure_dir, seed_everything
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Sensitivity analysis over future-warning horizon H"
+        description="Sensitivity analysis over sample-based future-warning horizon H"
     )
     ap.add_argument("--data", required=True)
     ap.add_argument("--config", default="configs/default.yaml")
@@ -145,6 +145,8 @@ def main():
                     test_b.window_end_ts,
                     test_b.onset_ts,
                     file_ids=test_b.file_ids,
+                    physical_events=test_b.physical_events,
+                    evaluable_events=test_b.evaluable_events,
                 )
 
                 metrics.update(
@@ -163,7 +165,9 @@ def main():
                     f"AUC={metrics['auc_roc']:.4f} "
                     f"F1={metrics['f1']:.4f} "
                     f"coverage={metrics.get('coverage', np.nan):.4f} "
-                    f"lead={metrics.get('lead_mean_s', np.nan):.3f}s"
+                    f"lead={metrics.get('lead_mean_s', np.nan):.3f}s "
+                    f"events={metrics.get('events_covered', 0)}/"
+                    f"{metrics.get('events_evaluable_total', 0)}"
                 )
 
     if not rows:

@@ -65,6 +65,18 @@ schema:
     temperature: [temperature, temp, temperature_c, "temperature[c]", t]
     humidity: [humidity, rh, relative_humidity, "humidity[%]"]
     pressure: [pressure, pressure_hpa, atmospheric_pressure, "pressure[hpa]"]
-    gas_resistance: [gas_resistance, gasresistance, gas_res, resistance, gas, gas_ohm, gas_resistance_ohm]
-  fire_aliases: [fire, fire_alarm, label, target, smoke, class, annotation]
-  timestamp_aliases: [timestamp, time, datetime, utc, date_time]
+    gas_resistance: [gas_resistance, gasresistance, gas_res, resistance, gas, gas_ohm, gas_resistance_ohm, resistance_gassensor]
+
+  label_aliases: [label_tag]
+  timestamp_aliases: [timestamp_since_poweron]
+  timestamp_scale: 0.001
+
+  label_states:
+    warmup: [0]
+    pre_fire: [1001]
+    fire: [1002, 1003, 1004, 1005, 1006, 1007]
+    post_fire: [1008, 1009]
+
+  physical_onset:
+    from_label: 1001
+    to_label: 1002

@@ -163,6 +163,8 @@ def main() -> None:
                     test_b.window_end_ts,
                     test_b.onset_ts,
                     file_ids=test_b.file_ids,
+                    physical_events=test_b.physical_events,
+                    evaluable_events=test_b.evaluable_events,
                 )
 
                 metrics.update(
@@ -198,6 +200,15 @@ def main() -> None:
                         "seed": seed,
                         "window": cfg["window"],
                         "horizon": cfg["horizon"],
+                        "physical_events": list(test_b.physical_events),
+                        "evaluable_events": list(test_b.evaluable_events),
+                        "state_semantics": {
+                            "warmup": [0],
+                            "pre_fire": [1001],
+                            "fire": [1002, 1003, 1004, 1005, 1006, 1007],
+                            "post_fire": [1008, 1009],
+                            "physical_onset": [1001, 1002],
+                        },
                     },
                     outdir / f"{stem}.pth",
                 )
@@ -216,9 +227,10 @@ def main() -> None:
                         "auc_roc",
                         "f1",
                         "recall",
-                        "coverage",
-                        "events_total",
+                        "events_physical_total",
+                        "events_evaluable_total",
                         "events_covered",
+                        "coverage",
                         "lead_mean_s",
                     ]
                 }
@@ -251,7 +263,6 @@ def main() -> None:
     # 2) macro mean across node-wise means;
     # 3) sigma_node = sample std across node-wise means;
     # 4) keep seed variability separate.
-
     node_summary = (
         df.groupby(["model", "outer_test_node"])[metric_cols]
         .agg(["mean", "std"])
@@ -264,10 +275,7 @@ def main() -> None:
         .mean()
         .sort_values(["model", "outer_test_node"])
     )
-    node_means.to_csv(
-        outdir / "lono_per_node_means.csv",
-        index=False,
-    )
+    node_means.to_csv(outdir / "lono_per_node_means.csv", index=False)
 
     macro_summary = (
         node_means.groupby("model")[metric_cols]

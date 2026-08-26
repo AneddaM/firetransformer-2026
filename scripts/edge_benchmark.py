@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, json, time
+import argparse, json
 from pathlib import Path
-import numpy as np
 import torch
 from fire_transformer.model import build_model
 from fire_transformer.evaluation import benchmark_latency

@@ -1,13 +1,24 @@
-"""Leakage-controlled raw CSV preparation for the WF-IoT revision.
+"""Leakage-controlled data preparation for physical-onset early warning.
 
-Principles:
+The public BME688/BME690 dataset is interpreted as a state sequence:
+
+    label 0             -> sensor warm-up/stabilization (excluded)
+    label 1001          -> valid pre-fire state
+    labels 1002..1007   -> active-fire acquisition
+    labels 1008, 1009   -> post-fire/recovery acquisition
+
+A physical fire onset is the first and unique 1001 -> 1002 transition inside an
+acquisition. Early-warning model inputs are generated exclusively from the pre-onset
+portion of an acquisition. Active-fire and post-fire observations are retained only as
+metadata for state validation and are never used as model input windows.
+
+Leakage-control principles:
 1) outer split is by physical node;
 2) inner validation split is by complete acquisition file;
 3) rolling features are computed independently per acquisition file;
-4) MinMaxScaler is fitted on training files only;
-5) sliding windows are created independently per file after the split;
-6) a physical fire onset is defined only by a 0->1 transition;
-7) early-warning windows are generated only while the current fire state is 0.
+4) MinMaxScaler is fitted only on eligible inner-training pre-onset samples;
+5) sliding windows are created independently per acquisition after the split;
+6) event coverage uses an explicit set of evaluable physical onset events.
 """
 from __future__ import annotations
 
@@ -20,6 +31,12 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+
+
+STATE_WARMUP = -1
+STATE_PREFIRE = 0
+STATE_FIRE = 1
+STATE_POSTFIRE = 2
 
 
 def _norm(s: str) -> str:
@@ -37,19 +54,29 @@ def infer_node(path: str | Path) -> str:
     )
 
 
+def infer_heater_profile(path: str | Path) -> int | None:
+    """Infer a profile identifier from filenames such as `...profilo_12.csv`.
+
+    Heater-profile identity is metadata only and is not used as a model feature.
+    """
+    m = re.search(r"profilo[\s_\-]*(\d+)", Path(path).stem, flags=re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
 def list_csvs(root: str | Path):
     return sorted(Path(root).rglob("*.csv"))
 
 
 def _resolve_column(columns, aliases, required=True):
     normalized = {_norm(c): c for c in columns}
-    for a in aliases:
-        na = _norm(a)
+
+    for alias in aliases:
+        na = _norm(alias)
         if na in normalized:
             return normalized[na]
 
-    for a in aliases:
-        na = _norm(a)
+    for alias in aliases:
+        na = _norm(alias)
         if len(na) < 4:
             continue
         for nc, original in normalized.items():
@@ -66,70 +93,212 @@ def _resolve_column(columns, aliases, required=True):
 
 def resolve_schema(df: pd.DataFrame, schema_cfg: dict):
     mapping = {}
+
     for canonical, aliases in schema_cfg["feature_aliases"].items():
         mapping[canonical] = _resolve_column(
-            df.columns, [canonical] + list(aliases)
+            df.columns,
+            [canonical] + list(aliases),
         )
 
-    mapping["fire"] = _resolve_column(
+    mapping["label"] = _resolve_column(
         df.columns,
-        schema_cfg.get("fire_aliases", ["fire", "label"]),
+        schema_cfg.get("label_aliases", ["label_tag"]),
     )
     mapping["timestamp"] = _resolve_column(
         df.columns,
-        schema_cfg.get("timestamp_aliases", ["timestamp", "time"]),
-        required=False,
+        schema_cfg.get("timestamp_aliases", ["timestamp_since_poweron"]),
     )
     return mapping
 
 
-def normalize_fire_label(series: pd.Series) -> np.ndarray:
-    if pd.api.types.is_numeric_dtype(series):
-        arr = pd.to_numeric(series, errors="coerce").fillna(0).to_numpy()
-        return (arr > 0).astype(np.int64)
+def decode_label_tags(series: pd.Series, schema_cfg: dict):
+    """Decode raw label_tag values into acquisition-state codes.
 
-    vals = series.astype(str).str.strip().str.lower()
-    pos = {"1", "true", "fire", "smoke", "yes", "positive", "burning"}
-    return vals.isin(pos).astype(np.int64).to_numpy()
+    Unknown label values raise rather than being silently mapped to fire/non-fire.
+    """
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.isna().any():
+        raise ValueError("NaN or non-numeric values found in label_tag")
+
+    labels = numeric.astype(np.int64).to_numpy()
+    state_cfg = schema_cfg["label_states"]
+
+    warmup = set(map(int, state_cfg["warmup"]))
+    pre_fire = set(map(int, state_cfg["pre_fire"]))
+    fire = set(map(int, state_cfg["fire"]))
+    post_fire = set(map(int, state_cfg["post_fire"]))
+    known = warmup | pre_fire | fire | post_fire
+
+    unknown = sorted(set(np.unique(labels).tolist()) - known)
+    if unknown:
+        raise ValueError(f"Unknown label_tag values: {unknown}")
+
+    states = np.empty(len(labels), dtype=np.int8)
+    states[np.isin(labels, list(warmup))] = STATE_WARMUP
+    states[np.isin(labels, list(pre_fire))] = STATE_PREFIRE
+    states[np.isin(labels, list(fire))] = STATE_FIRE
+    states[np.isin(labels, list(post_fire))] = STATE_POSTFIRE
+    return labels, states
 
 
-def parse_timestamps(series: pd.Series | None, n: int):
+def parse_timestamps(
+    series: pd.Series | None,
+    n: int,
+    scale: float = 1.0,
+):
+    """Parse timestamps and express numeric values in seconds using `scale`.
+
+    For the public dataset `timestamp_since_poweron` is in milliseconds and the
+    configuration therefore uses `timestamp_scale: 0.001`.
+    """
     if series is None:
         return np.arange(n, dtype=np.float64)
 
     numeric = pd.to_numeric(series, errors="coerce")
     if numeric.notna().mean() > 0.95:
-        return numeric.interpolate(limit_direction="both").to_numpy(dtype=np.float64)
+        arr = (
+            numeric.interpolate(limit_direction="both")
+            .to_numpy(dtype=np.float64)
+        )
+        return arr * float(scale)
 
     dt = pd.to_datetime(series, errors="coerce", utc=True)
     if dt.notna().mean() > 0.95:
         return (dt.astype("int64") / 1e9).to_numpy(dtype=np.float64)
 
-    return np.arange(n, dtype=np.float64)
+    raise ValueError("Timestamp column cannot be parsed reliably")
+
+
+def physical_onset_indices(
+    labels: np.ndarray,
+    from_label: int = 1001,
+    to_label: int = 1002,
+) -> np.ndarray:
+    labels = np.asarray(labels, dtype=np.int64)
+    if labels.size < 2:
+        return np.empty((0,), dtype=np.int64)
+    return (
+        np.flatnonzero(
+            (labels[:-1] == int(from_label))
+            & (labels[1:] == int(to_label))
+        )
+        + 1
+    ).astype(np.int64)
 
 
 def fire_onset_indices(fire: np.ndarray) -> np.ndarray:
-    """Return physical onset indices defined strictly by 0->1 transitions.
-
-    A sequence beginning in the fire state is not assigned an onset at index 0,
-    because the preceding 0 state is not observed.
-    """
+    """Generic binary 0->1 helper retained for tests/backward-compatible utilities."""
     fire = np.asarray(fire, dtype=np.int64)
     if fire.size < 2:
         return np.empty((0,), dtype=np.int64)
-
     return (
         np.flatnonzero((fire[:-1] == 0) & (fire[1:] == 1)) + 1
     ).astype(np.int64)
 
 
+def validate_state_sequence(
+    labels: np.ndarray,
+    states: np.ndarray,
+    path: str | Path,
+    schema_cfg: dict,
+):
+    """Validate the experimental state machine and return warm-up/onset indices.
+
+    Returns
+    -------
+    first_valid_raw_index:
+        Index of the first non-warm-up sample in the raw acquisition.
+    onset_index_after_warmup:
+        Physical onset index after removal of the warm-up block.
+    """
+    labels = np.asarray(labels, dtype=np.int64)
+    states = np.asarray(states, dtype=np.int8)
+
+    non_warmup = np.flatnonzero(states != STATE_WARMUP)
+    if len(non_warmup) == 0:
+        raise ValueError(f"{path}: acquisition contains only warm-up samples")
+
+    first_valid = int(non_warmup[0])
+    if np.any(states[first_valid:] == STATE_WARMUP):
+        raise ValueError(
+            f"{path}: warm-up label reappears after the valid acquisition begins"
+        )
+
+    labels_valid = labels[first_valid:]
+    states_valid = states[first_valid:]
+
+    onset_cfg = schema_cfg.get(
+        "physical_onset",
+        {"from_label": 1001, "to_label": 1002},
+    )
+    onset = physical_onset_indices(
+        labels_valid,
+        int(onset_cfg.get("from_label", 1001)),
+        int(onset_cfg.get("to_label", 1002)),
+    )
+
+    if len(onset) != 1:
+        raise ValueError(
+            f"{path}: expected exactly one physical "
+            f"{onset_cfg.get('from_label', 1001)}->"
+            f"{onset_cfg.get('to_label', 1002)} onset, found {len(onset)}"
+        )
+
+    onset_idx = int(onset[0])
+
+    if onset_idx <= 0:
+        raise ValueError(f"{path}: no observed pre-fire sample before onset")
+
+    if np.any(states_valid[:onset_idx] != STATE_PREFIRE):
+        raise ValueError(f"{path}: unexpected acquisition state before physical onset")
+
+    if states_valid[onset_idx] != STATE_FIRE:
+        raise ValueError(f"{path}: physical onset does not enter active-fire state")
+
+    if np.any(states_valid[onset_idx:] == STATE_PREFIRE):
+        raise ValueError(f"{path}: pre-fire state reappears after physical onset")
+
+    post = np.flatnonzero(states_valid == STATE_POSTFIRE)
+    if len(post):
+        first_post = int(post[0])
+        if np.any(states_valid[first_post:] == STATE_FIRE):
+            raise ValueError(f"{path}: active-fire state reappears after recovery")
+
+    return first_valid, onset_idx
+
+
 @dataclass
 class Acquisition:
     path: Path
+    file_id: str
     node: str
+    heater_profile: int | None
     raw: pd.DataFrame
+    labels: np.ndarray
+    states: np.ndarray
     fire: np.ndarray
     timestamps: np.ndarray
+    onset_index: int
+    onset_timestamp: float
+    raw_rows: int
+    warmup_rows: int
+
+    @property
+    def pre_onset_samples(self) -> int:
+        return int(self.onset_index)
+
+    @property
+    def physical_event(self):
+        return (
+            str(self.file_id),
+            round(float(self.onset_timestamp), 6),
+        )
+
+    @property
+    def prefire_duration_s(self) -> float:
+        if self.onset_index <= 0:
+            return float("nan")
+        return float(self.onset_timestamp - self.timestamps[0])
 
 
 @dataclass
@@ -139,6 +308,8 @@ class WindowBundle:
     window_end_ts: np.ndarray
     onset_ts: np.ndarray
     file_ids: np.ndarray
+    physical_events: tuple
+    evaluable_events: tuple
 
 
 class DatasetCatalog:
@@ -151,32 +322,79 @@ class DatasetCatalog:
             df = pd.read_csv(p)
             mapping = resolve_schema(df, schema_cfg)
 
-            canonical = pd.DataFrame({
-                "temperature": pd.to_numeric(df[mapping["temperature"]], errors="coerce"),
-                "humidity": pd.to_numeric(df[mapping["humidity"]], errors="coerce"),
-                "pressure": pd.to_numeric(df[mapping["pressure"]], errors="coerce"),
-                "gas_resistance": pd.to_numeric(df[mapping["gas_resistance"]], errors="coerce"),
-            })
-
-            valid = canonical.notna().all(axis=1)
-            canonical = canonical.loc[valid].reset_index(drop=True)
-
-            fire = normalize_fire_label(
-                df.loc[valid, mapping["fire"]].reset_index(drop=True)
+            canonical = pd.DataFrame(
+                {
+                    "temperature": pd.to_numeric(
+                        df[mapping["temperature"]], errors="coerce"
+                    ),
+                    "humidity": pd.to_numeric(
+                        df[mapping["humidity"]], errors="coerce"
+                    ),
+                    "pressure": pd.to_numeric(
+                        df[mapping["pressure"]], errors="coerce"
+                    ),
+                    "gas_resistance": pd.to_numeric(
+                        df[mapping["gas_resistance"]], errors="coerce"
+                    ),
+                }
             )
 
-            ts_series = (
-                None
-                if mapping["timestamp"] is None
-                else df.loc[valid, mapping["timestamp"]].reset_index(drop=True)
-            )
-            ts = parse_timestamps(ts_series, len(canonical))
+            # The public release has valid values for all four canonical channels.
+            # Fail loudly instead of introducing an undocumented sample-removal rule.
+            invalid_feature_rows = ~canonical.notna().all(axis=1)
+            if invalid_feature_rows.any():
+                raise ValueError(
+                    f"{p}: found {int(invalid_feature_rows.sum())} rows with invalid "
+                    "canonical sensor values"
+                )
 
-            if len(canonical) == 0:
-                continue
+            labels_all, states_all = decode_label_tags(
+                df[mapping["label"]],
+                schema_cfg,
+            )
+            first_valid, onset_idx = validate_state_sequence(
+                labels_all,
+                states_all,
+                p,
+                schema_cfg,
+            )
+
+            ts_all = parse_timestamps(
+                df[mapping["timestamp"]],
+                len(df),
+                scale=float(schema_cfg.get("timestamp_scale", 1.0)),
+            )
+            if len(ts_all) > 1 and np.any(np.diff(ts_all) <= 0):
+                raise ValueError(f"{p}: timestamps are not strictly increasing")
+
+            # Remove only the initial warm-up/stabilization block.
+            canonical = canonical.iloc[first_valid:].reset_index(drop=True)
+            labels = labels_all[first_valid:]
+            states = states_all[first_valid:]
+            timestamps = ts_all[first_valid:]
+
+            if onset_idx >= len(canonical):
+                raise ValueError(f"{p}: onset index is outside valid acquisition")
+
+            onset_timestamp = float(timestamps[onset_idx])
+            fire = (states == STATE_FIRE).astype(np.int64)
 
             self.acquisitions.append(
-                Acquisition(p, infer_node(p), canonical, fire, ts)
+                Acquisition(
+                    path=p,
+                    file_id=p.relative_to(self.root).as_posix(),
+                    node=infer_node(p),
+                    heater_profile=infer_heater_profile(p),
+                    raw=canonical,
+                    labels=labels,
+                    states=states,
+                    fire=fire,
+                    timestamps=timestamps,
+                    onset_index=onset_idx,
+                    onset_timestamp=onset_timestamp,
+                    raw_rows=len(df),
+                    warmup_rows=first_valid,
+                )
             )
 
         if not self.acquisitions:
@@ -232,7 +450,6 @@ def split_outer_inner(
             if len(node_files) > 1
             else 0
         )
-
         val_idx = set(idx[:n_val].tolist())
 
         for i, acq in enumerate(node_files):
@@ -247,15 +464,41 @@ def split_outer_inner(
     return train, val, test
 
 
-def fit_feature_scaler(train_acqs, rolling_window=5):
-    frames = [enrich(a.raw, rolling_window) for a in train_acqs]
+def fit_feature_scaler(
+    train_acqs,
+    rolling_window=5,
+    window=60,
+):
+    """Fit scaler only on pre-onset samples that can contribute to model windows."""
+    eligible = [a for a in train_acqs if a.pre_onset_samples >= window]
+    if not eligible:
+        raise ValueError(f"No evaluable training acquisitions for W={window}")
+
+    frames = [
+        enrich(
+            a.raw.iloc[: a.onset_index].reset_index(drop=True),
+            rolling_window,
+        )
+        for a in eligible
+    ]
     feature_names = list(frames[0].columns)
 
     scaler = MinMaxScaler().fit(
         pd.concat(frames, ignore_index=True).to_numpy(dtype=np.float64)
     )
-
     return scaler, feature_names
+
+
+def _empty_bundle(acq: Acquisition, window: int, n_features: int):
+    return WindowBundle(
+        X=np.empty((0, window, n_features), dtype=np.float32),
+        y=np.empty((0,), dtype=np.int64),
+        window_end_ts=np.empty((0,), dtype=np.float64),
+        onset_ts=np.empty((0,), dtype=np.float64),
+        file_ids=np.empty((0,), dtype=object),
+        physical_events=(acq.physical_event,),
+        evaluable_events=(),
+    )
 
 
 def make_windows_one(
@@ -265,78 +508,78 @@ def make_windows_one(
     window=60,
     horizon=15,
 ):
-    """Generate pre-onset early-warning windows for one acquisition.
+    """Generate physical-onset warning windows from one acquisition.
 
-    A window ending at sample t is eligible only when the current observed
-    fire state is 0. Its target is positive if a physical 0->1 onset occurs
-    in samples (t, t+H].
+    Every input window ends strictly before the first physical 1001->1002 onset.
+    A target is positive iff that onset occurs within the next H observations.
+    Active-fire and post-fire/recovery observations never enter model inputs.
     """
-    features = enrich(acq.raw, rolling_window).to_numpy(dtype=np.float64)
-    x = scaler.transform(features).astype(np.float32)
+    if window <= 0 or horizon <= 0:
+        raise ValueError("window and horizon must be positive")
 
-    yraw = np.asarray(acq.fire, dtype=np.int64)
-    ts = np.asarray(acq.timestamps, dtype=np.float64)
-    physical_onsets = fire_onset_indices(yraw)
+    onset = int(acq.onset_index)
+    raw_pre = acq.raw.iloc[:onset].reset_index(drop=True)
+    features = enrich(raw_pre, rolling_window).to_numpy(dtype=np.float64)
+    n_features = features.shape[1] if features.ndim == 2 else 20
+
+    if onset < window:
+        return _empty_bundle(acq, window, n_features)
+
+    x = scaler.transform(features).astype(np.float32)
+    ts = np.asarray(acq.timestamps[:onset], dtype=np.float64)
 
     X, y, end_ts, onset_ts, file_ids = [], [], [], [], []
 
-    last_t = len(x) - horizon - 1
+    for t in range(window - 1, onset):
+        distance_to_onset = onset - t
+        label = int(0 < distance_to_onset <= horizon)
 
-    for t in range(window - 1, last_t + 1):
-        # Early-warning classification is defined only before an active fire.
-        if yraw[t] != 0:
-            continue
-
-        candidates = physical_onsets[
-            (physical_onsets > t) & (physical_onsets <= t + horizon)
-        ]
-
-        label = int(candidates.size > 0)
-
-        X.append(x[t - window + 1:t + 1])
+        X.append(x[t - window + 1 : t + 1])
         y.append(label)
         end_ts.append(ts[t])
-
-        if label:
-            onset_ts.append(ts[int(candidates[0])])
-        else:
-            onset_ts.append(np.nan)
-
-        file_ids.append(str(acq.path))
-
-    if not X:
-        nfeat = x.shape[1]
-        return WindowBundle(
-            np.empty((0, window, nfeat), np.float32),
-            np.empty((0,), np.int64),
-            np.empty((0,), np.float64),
-            np.empty((0,), np.float64),
-            np.empty((0,), object),
-        )
+        onset_ts.append(acq.onset_timestamp if label else np.nan)
+        file_ids.append(acq.file_id)
 
     return WindowBundle(
-        np.stack(X),
-        np.asarray(y, np.int64),
-        np.asarray(end_ts, np.float64),
-        np.asarray(onset_ts, np.float64),
-        np.asarray(file_ids, object),
+        X=np.stack(X),
+        y=np.asarray(y, dtype=np.int64),
+        window_end_ts=np.asarray(end_ts, dtype=np.float64),
+        onset_ts=np.asarray(onset_ts, dtype=np.float64),
+        file_ids=np.asarray(file_ids, dtype=object),
+        physical_events=(acq.physical_event,),
+        evaluable_events=(acq.physical_event,),
     )
 
 
-def concat_bundles(bundles):
-    good = [b for b in bundles if len(b.y)]
+def _dedupe_events(events):
+    return tuple(dict.fromkeys(events))
 
+
+def concat_bundles(bundles):
+    if not bundles:
+        raise ValueError("No acquisition bundles were provided")
+
+    physical_events = _dedupe_events(
+        event for bundle in bundles for event in bundle.physical_events
+    )
+    evaluable_events = _dedupe_events(
+        event for bundle in bundles for event in bundle.evaluable_events
+    )
+
+    good = [b for b in bundles if len(b.y)]
     if not good:
         raise ValueError(
-            "No windows generated. Check window/horizon length and input files."
+            "No windows generated. Check W, acquisition pre-onset length, and split."
         )
 
     return WindowBundle(
-        np.concatenate([b.X for b in good]),
-        np.concatenate([b.y for b in good]),
-        np.concatenate([b.window_end_ts for b in good]),
-        np.concatenate([b.onset_ts for b in good]),
-        np.concatenate([b.file_ids for b in good]),
+        X=np.concatenate([b.X for b in good]),
+        y=np.concatenate([b.y for b in good]),
+        window_end_ts=np.concatenate([b.window_end_ts for b in good]),
+        onset_ts=np.concatenate([b.onset_ts for b in good]),
+        file_ids=np.concatenate([b.file_ids for b in good]),
+        physical_events=physical_events,
+        evaluable_events=evaluable_events,
     )
 
 
@@ -356,19 +599,25 @@ def build_fold(
         split_seed,
     )
 
-    scaler, feature_names = fit_feature_scaler(train_a, rolling_window)
+    scaler, feature_names = fit_feature_scaler(
+        train_a,
+        rolling_window,
+        window,
+    )
 
     def make(items):
-        return concat_bundles([
-            make_windows_one(
-                a,
-                scaler,
-                rolling_window,
-                window,
-                horizon,
-            )
-            for a in items
-        ])
+        return concat_bundles(
+            [
+                make_windows_one(
+                    a,
+                    scaler,
+                    rolling_window,
+                    window,
+                    horizon,
+                )
+                for a in items
+            ]
+        )
 
     train = make(train_a)
     val = make(val_a)
@@ -396,7 +645,6 @@ def to_loader(
         torch.from_numpy(bundle.X),
         torch.from_numpy(bundle.y),
     )
-
     return DataLoader(
         ds,
         batch_size=batch_size,

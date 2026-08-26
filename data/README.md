@@ -20,22 +20,51 @@ data/raw/
 
 The loader searches recursively, so original filenames may be preserved.
 
+## Public annotation state machine
+
+The revised pipeline uses the raw `label_tag` values directly:
+
+```text
+0              -> initial warm-up/stabilization; excluded
+1001           -> valid pre-fire state
+1001 -> 1002   -> physical fire onset
+1002...1007    -> active-fire state
+1008, 1009     -> post-fire/recovery state
+```
+
+The physical onset is the first and unique `1001 -> 1002` transition inside each
+acquisition. Active-fire and post-fire samples are never used as early-warning model
+inputs.
+
+The public Version 1 archive contains 131,370 raw rows. Removing the 23,877 initial
+warm-up rows leaves 107,493 annotated rows: 11,762 pre-fire, 92,395 active-fire, and
+3,336 post-fire/recovery samples.
+
+## Heater profiles and time
+
+All 17 BME688 heater profiles are retained. Their different acquisition-cycle timing is
+not resampled. Therefore `W` and `H` are sample-based quantities. Physical lead time is
+computed from `timestamp_since_poweron`, which is converted from milliseconds to
+seconds using a factor of `0.001`.
+
 ## Leakage-control rule
 
 Every CSV is treated as one indivisible acquisition file. Inner validation is selected
-at file level before rolling features and sliding windows are generated. The outer
-held-out node is never used for scaler fitting, training, early stopping, or threshold
-selection.
+at file level before sliding windows are generated. The outer held-out node is never
+used for scaler fitting, training, early stopping, or threshold selection.
 
-## Physical onset rule
+The MinMax scaler is fitted only on eligible **pre-onset** samples from inner-training
+files. Neither active-fire/post-fire values nor the held-out node influence scaling.
 
-A physical fire onset is defined strictly as a `0 -> 1` transition of the binary fire
-annotation inside one acquisition file.
+## Event denominator
 
-A warning window ending at sample `t` is included only when the current observed state
-is `fire[t] == 0`. It is labeled positive if a physical onset occurs within the next
-`H` samples.
+There are 20 physical onset events. With `W=60`, 19 are evaluable. One NODO5
+acquisition contains only 20 pre-onset observations and therefore cannot generate a
+complete input window. Coverage is computed over evaluable physical events, while the
+physical event remains explicitly tracked.
 
-Coverage and lead time are computed per physical onset. Events are identified using
-both acquisition-file identity and onset timestamp, so independent files with equal or
-restarted timestamps remain separate events.
+Run before training:
+
+```bash
+python scripts/dataset_audit.py --data data/raw --strict-public
+```

@@ -19,17 +19,39 @@ seed, so those earlier values must not be mixed with the new full-LONO statistic
 ## Cross-node evaluation
 
 - full five-fold leave-one-node-out outer evaluation;
-- outer-node exclusion from scaler fitting, training, early stopping, and threshold calibration;
+- outer-node exclusion from scaler fitting, training, early stopping, threshold calibration, and hyperparameter selection;
 - inner train/validation split by complete acquisition file;
+- scaler fitted only on eligible pre-onset inner-training samples;
 - repeated random seeds;
 - hierarchical macro reporting.
 
-## Physical onset, coverage, and lead time
+## Physical onset, acquisition phases, coverage, and lead time
 
-A physical onset is defined strictly by a `0 -> 1` transition within one acquisition file.
-Windows ending while fire is already active are excluded.
-Event identity is `(acquisition_file, onset_timestamp)`.
-Coverage is event-level and lead time uses the earliest correctly warning window.
+Raw annotation states are interpreted as:
+
+```text
+0            -> warm-up/stabilization
+1001         -> pre-fire
+1002-1007    -> active fire
+1008-1009    -> post-fire/recovery
+```
+
+The physical fire onset is the first and unique `1001 -> 1002` transition in each
+acquisition. Only pre-onset samples are used to generate early-warning input windows.
+Active-fire and post-fire/recovery samples are excluded from model inputs.
+
+The public dataset contains 20 physical onset events. With `W=60`, 19 are evaluable;
+one NODO5 acquisition contains only 20 pre-onset observations.
+
+Event identity is `(acquisition_file, onset_timestamp)`. Coverage is computed over the
+explicit set of evaluable physical events, and lead time uses the earliest correctly
+warning positive-target window.
+
+## Heater-profile handling
+
+All 17 BME688 heater profiles are retained. No heater-profile selection and no temporal
+resampling are performed. `W` and `H` are sample-based quantities. Realized lead time
+is computed from `timestamp_since_poweron / 1000.0` and reported in seconds.
 
 ## Prediction-horizon sensitivity
 
@@ -43,4 +65,5 @@ Measured Raspberry Pi latency/energy must be reported only after actual hardware
 ## Scientific integrity rule
 
 No estimated or provisional LONO, horizon, latency, power, or energy result may be
-presented as measured evidence.
+presented as measured evidence. Old predictive values generated with the previous
+state/target definition must not be reused after the physical-onset preprocessing change.

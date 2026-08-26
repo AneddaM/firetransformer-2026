@@ -7,33 +7,40 @@ Safe to report before new experiments:
 
 - model parameter counts;
 - FP32 / theoretical INT8 weight footprint;
-- analytical MAC estimate under the stated counting convention.
+- analytical MAC estimate under the stated counting convention;
+- public-dataset state counts verified directly from Mendeley Data Version 1.
 
-Must be measured before publication:
+Must be re-measured with the physical-onset pipeline before publication:
 
 - five-fold LONO AUC, precision, recall, F1, coverage and lead time;
+- random-seed stability;
 - horizon-sensitivity metrics;
 - Raspberry Pi latency;
 - active and idle power;
 - system and dynamic energy per inference.
 
-The scripts write measured outputs under `runs/`, which is ignored by Git until results
-are intentionally reviewed and selected for release.
+Old predictive values generated using an earlier target/preprocessing implementation
+must not be mixed with the new results.
 
 ## Event definition
 
-A physical event is defined only by a `0 -> 1` transition of the fire annotation within
-one acquisition file.
+A physical event is the first and unique `1001 -> 1002` annotation transition within
+one acquisition file. Event identity is:
 
-Early-warning windows are generated only while the current fire state is `0`. For a
-window ending at `t`, the target is positive when a physical onset occurs in `(t, t+H]`.
+```text
+(acquisition_file, onset_timestamp)
+```
 
-Coverage and lead time are event-level metrics. Events are identified by
-`(acquisition_file, onset_timestamp)` to prevent unrelated acquisitions with the same
-timestamp values from being merged.
+Only pre-onset observations are used as model inputs. Active-fire and post-fire states
+are excluded from window generation.
 
-For each covered event, lead time uses the **earliest correctly warning window** before
-the physical onset.
+A physical event is evaluable for a given `W` only when at least one complete pre-onset
+input window exists. With `W=60`, the public dataset contains 20 physical onsets and 19
+evaluable events.
+
+Coverage is the fraction of **evaluable** physical onset events for which at least one
+positive prediction is produced on a positive-target warning window. Lead time uses the
+earliest correctly warning positive-target window for each covered event.
 
 ## Statistical reporting
 
@@ -46,5 +53,4 @@ LONO macro statistics are computed hierarchically.
 4. Random-seed variability is reported separately and is not pooled with between-node
    variability.
 
-The repository must therefore not compute the paper `mean ± std` directly over all
-node-seed runs.
+The paper `mean ± std` must therefore not be computed directly over all node-seed runs.

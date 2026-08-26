@@ -24,12 +24,7 @@ def main():
 
     for name in ["ft32", "ft64", "ft128"]:
         model_cfg = cfg["models"][name]
-        model = build_model(
-            model_cfg,
-            n_features=20,
-            gas_feature_index=3,
-        )
-
+        model = build_model(model_cfg, n_features=20, gas_feature_index=3)
         params = sum(p.numel() for p in model.parameters())
         macs = transformer_macs(
             cfg["window"] + 1,
@@ -38,7 +33,6 @@ def main():
             model_cfg["d_ff"],
             model_cfg["n_layers"],
         )
-
         rows.append(
             {
                 "model": name,
@@ -52,13 +46,7 @@ def main():
         )
 
     df = pd.DataFrame(rows)
-    print(
-        df.to_string(
-            index=False,
-            float_format=lambda value: f"{value:.3f}",
-        )
-    )
-
+    print(df.to_string(index=False, float_format=lambda value: f"{value:.3f}"))
     if args.output:
         df.to_csv(args.output, index=False)
 
