@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Audit the public dataset before any training run.
 
-The script validates the state machine through DatasetCatalog and reports raw/sample
-counts, physical/evaluable onset counts, node distribution, heater-profile metadata,
-and pre-fire duration. Use --strict-public to enforce the counts verified for Mendeley
-Data version 1 (DOI 10.17632/48j7mm8k56.1).
+The five NODO directories are reported only as storage/development-kit groups. They
+are not treated as independent evaluation nodes and are never used to define CV folds.
 """
 from __future__ import annotations
 
@@ -15,17 +13,12 @@ import numpy as np
 import pandas as pd
 
 from fire_transformer.config import load_config
-from fire_transformer.data import (
-    DatasetCatalog,
-    STATE_FIRE,
-    STATE_POSTFIRE,
-    STATE_PREFIRE,
-)
+from fire_transformer.data import DatasetCatalog, STATE_FIRE, STATE_POSTFIRE, STATE_PREFIRE
 
 
 PUBLIC_EXPECTED = {
     "files": 20,
-    "nodes": 5,
+    "storage_groups": 5,
     "raw_rows": 131370,
     "warmup_rows": 23877,
     "annotated_rows": 107493,
@@ -63,39 +56,41 @@ def main():
     physical_events = len(acquisitions)
     evaluable = [a for a in acquisitions if a.pre_onset_samples >= window]
     non_evaluable = [a for a in acquisitions if a.pre_onset_samples < window]
-
-    filename_profile_indices = sorted(
-    {
-        a.filename_profile_index
-        for a in acquisitions
-        if a.filename_profile_index is not None
-    }
-    )
     recovery_files = int(sum(np.any(a.states == STATE_POSTFIRE) for a in acquisitions))
 
-    print("=" * 68)
+    filename_slot_indices = sorted(
+        {
+            a.filename_slot_index
+            for a in acquisitions
+            if a.filename_slot_index is not None
+        }
+    )
+
+    print("=" * 76)
     print("DATASET AUDIT — PHYSICAL-ONSET EARLY WARNING")
-    print("=" * 68)
-    print(f"CSV files                         : {len(acquisitions)}")
-    print(f"Nodes                             : {len(catalog.nodes)} {catalog.nodes}")
+    print("=" * 76)
+    print(f"CSV acquisition files                          : {len(acquisitions)}")
     print(
-        "Acquisition profile indices "
-        f"from filenames : {len(filename_profile_indices)} "
-        f"{filename_profile_indices}"
+        f"Storage/development-kit groups (metadata only): "
+        f"{len(catalog.storage_groups)} {catalog.storage_groups}"
     )
     print(
-        "Documented BME688 heater profiles           : 17"
+        "Filename `profilo_X` tokens (not global HP IDs)  : "
+        f"{filename_slot_indices}"
     )
-    print(f"Raw rows                          : {raw_rows}")
-    print(f"Warm-up rows (label 0)            : {warmup_rows}")
-    print(f"Annotated rows after warm-up      : {annotated_rows}")
-    print(f"Pre-fire rows (1001)              : {prefire_rows}")
-    print(f"Active-fire rows (1002-1007)      : {fire_rows}")
-    print(f"Post-fire rows (1008-1009)        : {postfire_rows}")
-    print(f"Files with observed recovery      : {recovery_files}")
-    print(f"Physical 1001->1002 onsets        : {physical_events}")
-    print(f"Evaluable events for W={window:<3}         : {len(evaluable)}")
-    print(f"Non-evaluable events for W={window:<3}     : {len(non_evaluable)}")
+    print("Documented distinct BME688 heater profiles        : 17")
+    print("Heater-profile policy                             : all retained; no selection")
+    print("CV grouping policy                                : complete acquisition CSV only")
+    print(f"Raw rows                                           : {raw_rows}")
+    print(f"Warm-up rows (label 0)                             : {warmup_rows}")
+    print(f"Annotated rows after warm-up                       : {annotated_rows}")
+    print(f"Pre-fire rows (1001)                               : {prefire_rows}")
+    print(f"Active-fire rows (1002-1007)                       : {fire_rows}")
+    print(f"Post-fire rows (1008-1009)                         : {postfire_rows}")
+    print(f"Files with observed recovery                       : {recovery_files}")
+    print(f"Physical 1001->1002 onsets                         : {physical_events}")
+    print(f"Evaluable events for W={window:<3}                          : {len(evaluable)}")
+    print(f"Non-evaluable events for W={window:<3}                      : {len(non_evaluable)}")
 
     print("\nRaw label_tag distribution:")
     for label in sorted(label_counts):
@@ -106,8 +101,8 @@ def main():
         rows.append(
             {
                 "file": a.file_id,
-                "node": a.node,
-                "filename_profile_index": a.filename_profile_index,
+                "storage_group": a.storage_group,
+                "filename_slot_index": a.filename_slot_index,
                 "pre_onset_samples": a.pre_onset_samples,
                 "prefire_duration_s": a.prefire_duration_s,
                 "onset_time_s": a.onset_timestamp,
@@ -116,8 +111,8 @@ def main():
             }
         )
 
-    detail = pd.DataFrame(rows).sort_values(["node", "file"])
-    print("\nPer-acquisition summary:")
+    detail = pd.DataFrame(rows).sort_values("file")
+    print("\nPer-acquisition summary (descriptive only; no storage-group comparison):")
     print(detail.to_string(index=False))
 
     if non_evaluable:
@@ -132,7 +127,7 @@ def main():
     if args.strict_public:
         observed = {
             "files": len(acquisitions),
-            "nodes": len(catalog.nodes),
+            "storage_groups": len(catalog.storage_groups),
             "raw_rows": raw_rows,
             "warmup_rows": warmup_rows,
             "annotated_rows": annotated_rows,
@@ -140,9 +135,7 @@ def main():
             "fire_rows": fire_rows,
             "postfire_rows": postfire_rows,
             "physical_events": physical_events,
-            "evaluable_w60": len(
-                [a for a in acquisitions if a.pre_onset_samples >= 60]
-            ),
+            "evaluable_w60": len([a for a in acquisitions if a.pre_onset_samples >= 60]),
         }
         mismatches = {
             key: (PUBLIC_EXPECTED[key], observed[key])

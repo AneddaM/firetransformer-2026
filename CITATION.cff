@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the associated WF-IoT paper and dataset."
+title: "FireTransformer WF-IoT 2026 reproducibility repository"
+type: software
+authors:
+  - family-names: Matta
+    given-names: Chiara
+  - family-names: Giusto
+    given-names: Daniele
+  - family-names: Anedda
+    given-names: Matteo
+year: 2026
+repository-code: "https://github.com/AneddaM/firetransformer-2026"

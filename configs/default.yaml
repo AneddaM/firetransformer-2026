@@ -2,8 +2,13 @@ seed: 42
 window: 60
 horizon: 15
 rolling_window: 5
-val_fraction_files: 0.25
 threshold_objective: f1
+
+cv:
+  n_splits: 5
+  outer_split_seed: 2026
+  inner_split_seed_base: 1000
+  val_fraction_files: 0.25
 
 training:
   batch_size: 256

@@ -1,6 +1,6 @@
 # Results policy
 
-This public repository intentionally contains **no fabricated, expected, or provisional
+This repository intentionally contains **no fabricated, expected, or provisional
 experimental results**.
 
 Safe to report before new experiments:
@@ -10,47 +10,39 @@ Safe to report before new experiments:
 - analytical MAC estimate under the stated counting convention;
 - public-dataset state counts verified directly from Mendeley Data Version 1.
 
-Must be re-measured with the physical-onset pipeline before publication:
+Must be measured with the acquisition-level physical-onset pipeline before publication:
 
-- five-fold LONO AUC, precision, recall, F1, coverage and lead time;
+- grouped five-fold CV AUC, precision, recall, F1, coverage and lead time;
 - random-seed stability;
 - horizon-sensitivity metrics;
 - Raspberry Pi latency;
 - active and idle power;
 - system and dynamic energy per inference.
 
-Old predictive values generated using an earlier target/preprocessing implementation
-must not be mixed with the new results.
+Previous leave-one-`NODO` results are invalid for the intended experimental
+interpretation because the five directory groups are acquisition-storage/development-kit
+partitions rather than independent evaluation nodes. They must not be reported.
 
 ## Event definition
 
-A physical event is the first and unique `1001 -> 1002` annotation transition within
-one acquisition file. Event identity is:
+A physical event is the first and unique `1001 -> 1002` transition within one acquisition
+file. Event identity is `(acquisition_file, onset_timestamp)`. Only pre-onset observations
+are used as model inputs.
 
-```text
-(acquisition_file, onset_timestamp)
-```
-
-Only pre-onset observations are used as model inputs. Active-fire and post-fire states
-are excluded from window generation.
-
-A physical event is evaluable for a given `W` only when at least one complete pre-onset
-input window exists. With `W=60`, the public dataset contains 20 physical onsets and 19
-evaluable events.
-
-Coverage is the fraction of **evaluable** physical onset events for which at least one
-positive prediction is produced on a positive-target warning window. Lead time uses the
-earliest correctly warning positive-target window for each covered event.
+With `W=60`, the public dataset contains 20 physical onsets and 19 evaluable events.
+Coverage is the fraction of evaluable physical onset events receiving at least one
+correct positive-target warning. Lead time uses the earliest correctly warning
+positive-target window and is conditional on covered events.
 
 ## Statistical reporting
 
-LONO macro statistics are computed hierarchically.
+Grouped-CV statistics are computed hierarchically:
 
-1. Metrics are first averaged across random seeds separately for each held-out node.
-2. The macro mean is computed from the five node-wise means.
-3. The standard deviation reported together with the macro mean is the between-node
-   sample standard deviation (`sigma_node`).
-4. Random-seed variability is reported separately and is not pooled with between-node
-   variability.
+1. metrics are averaged across random seeds separately within each outer acquisition fold;
+2. the macro CV mean is computed from the five fold-wise means;
+3. the accompanying sample standard deviation is `sigma_fold` across those five fold means;
+4. random-seed variability is reported separately and is not pooled with `sigma_fold`.
 
-The paper `mean ± std` must therefore not be computed directly over all node-seed runs.
+The paper should compare models using these aggregate grouped-CV statistics. Individual
+fold values are retained for reproducibility but are not interpreted as physical-node or
+heater-profile comparisons.

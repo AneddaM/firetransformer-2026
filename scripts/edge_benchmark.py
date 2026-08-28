@@ -1,31 +1,17 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-import argparse, json
-from pathlib import Path
-import torch
+import argparse,time,json
+import numpy as np, torch
+from fire_transformer.config import load_config
 from fire_transformer.model import build_model
-from fire_transformer.evaluation import benchmark_latency
-from fire_transformer.utils import device_from_arg
 
-
-def main():
-    ap=argparse.ArgumentParser(description="Batch-1 edge latency benchmark")
-    ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--device", default="cpu")
-    ap.add_argument("--threads", type=int, default=1)
-    ap.add_argument("--warmup", type=int, default=500)
-    ap.add_argument("--iterations", type=int, default=5000)
-    ap.add_argument("--output", default=None)
-    args=ap.parse_args()
-    torch.set_num_threads(args.threads)
-    ckpt=torch.load(args.checkpoint,map_location="cpu")
-    model=build_model(ckpt["model_cfg"], ckpt["n_features"], gas_feature_index=3)
-    model.load_state_dict(ckpt["state_dict"])
-    device=device_from_arg(args.device)
-    sample=torch.zeros(1, int(ckpt.get("window",60)), int(ckpt["n_features"]), dtype=torch.float32)
-    stats=benchmark_latency(model,sample,device,args.warmup,args.iterations)
-    stats.update({"checkpoint":str(args.checkpoint),"model":ckpt.get("model_name"),"device":device,"threads":args.threads,"batch_size":1,"warmup":args.warmup,"iterations":args.iterations})
-    print(json.dumps(stats,indent=2))
-    if args.output: Path(args.output).write_text(json.dumps(stats,indent=2),encoding="utf-8")
-
-if __name__=="__main__": main()
+ap=argparse.ArgumentParser(); ap.add_argument('--model',default='ft64',choices=['ft32','ft64','ft128']); ap.add_argument('--config',default='configs/default.yaml'); ap.add_argument('--checkpoint'); ap.add_argument('--warmup',type=int,default=1000); ap.add_argument('--runs',type=int,default=5000); ap.add_argument('--threads',type=int,default=4); args=ap.parse_args()
+torch.set_num_threads(args.threads); cfg=load_config(args.config); model=build_model(cfg['models'][args.model],n_features=20,gas_feature_index=3).eval()
+if args.checkpoint:
+    obj=torch.load(args.checkpoint,map_location='cpu'); model.load_state_dict(obj['state_dict'] if isinstance(obj,dict) and 'state_dict' in obj else obj)
+x=torch.zeros(1,60,20)
+with torch.inference_mode():
+    for _ in range(args.warmup): model(x)
+    times=[]
+    for _ in range(args.runs):
+        t0=time.perf_counter_ns(); model(x); t1=time.perf_counter_ns(); times.append((t1-t0)/1e6)
+print(json.dumps({'model':args.model,'runs':args.runs,'median_ms':float(np.median(times)),'p95_ms':float(np.percentile(times,95)),'mean_ms':float(np.mean(times)),'threads':args.threads},indent=2))

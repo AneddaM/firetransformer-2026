@@ -1,151 +1,148 @@
 # FireTransformer — WF-IoT 2026
 
-Code and experimental protocol for the camera-ready revision of
+Code and experimental protocol for the revision of
 **“Edge-Aware FireTransformer for Horizon-Based Early Wildfire Warning in IoT Sensor Networks.”**
 
-This repository implements the physical-onset formulation used in the revised paper.
-It retains all 17 BME688 heater profiles, performs no temporal resampling, and uses
-sample-based windows/horizons while reporting realized warning anticipation from the
-recorded timestamps in seconds.
+The repository implements a physical-onset early-warning task over the **20 public
+acquisition CSV files as one pooled multi-profile campaign**. The five `NODO1...NODO5`
+directories reflect Bosch development-kit/storage organization used during acquisition;
+they are **not independent statistical nodes, domains, or cross-validation groups**.
 
-## What is implemented
+## Experimental interpretation
 
-- FireTransformer FT-32, FT-64, and FT-128;
-- FT-64 as the reference configuration for full LONO and prediction-horizon sensitivity;
-- FT-32 retained as the compact prospective node-edge configuration;
-- BiLSTM-BCE and BiLSTM-FL baselines;
-- full five-fold leave-one-node-out (LONO) outer evaluation;
-- outer test node completely excluded from scaler fitting, training, early stopping,
-  threshold selection, and hyperparameter selection;
-- inner train/validation split by complete acquisition file before window generation;
-- exact public-dataset state decoding from `label_tag`;
-- physical fire onset defined by the first and unique `1001 -> 1002` transition;
-- model input windows generated exclusively from pre-onset observations;
-- active-fire and post-fire/recovery observations excluded from model inputs;
-- MinMaxScaler fitted only on eligible pre-onset samples from inner-training files;
-- explicit physical-event and evaluable-event bookkeeping;
-- 20-dimensional feature representation: 4 raw variables plus rolling mean/std/min/max;
-- sample-based horizon labels with `W=60` and configurable `H`;
-- timestamp conversion from `timestamp_since_poweron` milliseconds to seconds;
-- repeated random seeds and hierarchical per-node / macro summaries;
-- event-aware coverage and lead time, with events disambiguated by acquisition-file identity;
-- analytical parameter count, weight footprint, and MAC count;
-- Raspberry Pi / CPU batch-1 latency benchmark;
-- externally measured power-log integration for system and dynamic energy per inference;
-- state-aware synthetic smoke test and GitHub Actions CI;
-- public-dataset audit script that must be run before training.
+- 20 acquisition CSV files are retained;
+- 17 distinct BME688 heater profiles are represented across those 20 acquisitions;
+- some heater profiles are repeated, but no profile is selected as “best”;
+- heater-profile identity is not a model feature and is not an evaluation target;
+- no temporal resampling is applied;
+- cross-validation is grouped by complete acquisition file;
+- all reported predictive results must come from the new acquisition-level grouped-CV pipeline.
+
+The repository deliberately does **not** perform comparisons among `NODO1...NODO5`.
 
 ## Dataset state semantics
 
-The public dataset contains **131,370 raw samples**. The revised pipeline interprets
-`label_tag` as follows:
+The public dataset contains **131,370 raw samples**. `label_tag` is interpreted as:
 
 ```text
-label_tag = 0
-    sensor warm-up / stabilization
-    EXCLUDED
-
-label_tag = 1001
-    valid pre-fire state
-
-1001 -> 1002
-    physical fire onset
-
-label_tag = 1002...1007
-    active-fire acquisition
-
-label_tag = 1008, 1009
-    post-fire / recovery acquisition
+0              initial warm-up / stabilization -> excluded
+1001           valid pre-fire state
+1001 -> 1002   physical fire onset
+1002...1007    active-fire state
+1008, 1009     post-fire / recovery state
 ```
 
-After removal of the 23,877 warm-up samples, **107,493 annotated samples** remain:
+After removing the 23,877 warm-up samples, **107,493 annotated samples** remain:
 
 - 11,762 pre-fire samples (`1001`);
 - 92,395 active-fire samples (`1002`–`1007`);
 - 3,336 post-fire/recovery samples (`1008`–`1009`).
 
-These counts describe acquisition states. They are **not** the early-warning window
-class counts. Early-warning windows are generated only from the pre-onset phase.
+All 20 acquisition files contain exactly one physical `1001 -> 1002` onset. With the
+reference `W=60`, 19 physical onset events are evaluable; one acquisition contains only
+20 valid pre-onset observations and cannot produce a complete input window.
 
-Every one of the 20 acquisition files contains exactly one physical `1001 -> 1002`
-onset. With `W=60`, 19 physical onset events are evaluable. One acquisition contains
-only 20 valid pre-onset observations and therefore cannot produce a complete input
-window; the physical event remains tracked but is excluded from the event-coverage
-denominator for `W=60`.
+These acquisition-state counts are not the early-warning class counts. Model windows
+are generated **only before the physical onset**.
 
-See `docs/state_semantics.md` for the full state machine and rationale.
+## Early-warning target
 
-## Heater-profile policy
-
-All **17 BME688 heater profiles** are retained. No heater-profile selection and no
-temporal resampling are applied in this revision. Because the heater profiles have
-different acquisition-cycle timing, `W` and `H` are defined in **observations**, not in
-fixed physical seconds. Heater-profile identity is metadata only and is not used as an
-input feature.
-
-Realized event lead time is calculated from:
-
-```text
-timestamp_since_poweron / 1000.0
-```
-
-so that lead-time results are reported in seconds despite heterogeneous acquisition
-cadences.
-
-## Scientific validation rule
-
-For outer fold `NODOk`:
-
-```text
-Development nodes (4)                   Outer test node (1)
-      |                                        |
-      +-- file-grouped train/validation        +-- final test only
-          |                                    |
-          +-- pre-onset-only scaler            +-- never fit scaler
-          +-- training                         +-- never train
-          +-- early stopping                   +-- never early-stop
-          +-- choose threshold                 +-- never choose threshold
-```
-
-Because windows overlap heavily, no acquisition file is allowed to contribute windows
-to both inner training and inner validation.
-
-## Physical-onset early-warning target
-
-For each acquisition, let `o` denote the physical onset index after warm-up removal.
-A `W`-sample input window ending at sample `t` is eligible only when:
+For acquisition onset index `o`, a `W`-observation window ending at `t` is eligible only
+when:
 
 ```text
 W - 1 <= t < o
 ```
 
-Its target is:
+The target is:
 
 ```text
 y_t = 1  if  0 < o - t <= H
 y_t = 0  if      o - t > H
 ```
 
-No active-fire or post-fire sample is ever included in an input window.
+Active-fire and post-fire/recovery samples never enter the input tensor.
 
-Coverage is computed over **evaluable physical onset events**, where event identity is:
+The 4 raw BME688 variables (temperature, humidity, pressure, gas resistance) are enriched
+with rolling mean/std/min/max, producing 20 features. The MinMax scaler is fitted only
+on eligible pre-onset samples from inner-training acquisition files.
+
+## Heater profiles and physical time
+
+All **17 documented BME688 heater profiles** are retained. The public filenames contain
+small `profilo_X` tokens inside the storage layout; the repository does not treat those
+tokens as global heater-profile identifiers.
+
+Because heater profiles have different acquisition-cycle timing, `W` and `H` are numbers
+of **observations**, not fixed seconds. Realized lead time is calculated from:
 
 ```text
-(acquisition_file, onset_timestamp)
+timestamp_since_poweron / 1000.0
 ```
 
-For a covered event:
+and is therefore reported in seconds. Lead time is conditional on events that are
+actually covered by at least one correct warning.
+
+## Leakage-controlled five-fold grouped cross-validation
+
+The unit of splitting is the **complete acquisition CSV**.
+
+For the public 20-file dataset:
 
 ```text
-lead_time = onset_timestamp - earliest_correct_warning_window_end
+Outer grouped CV: 5 folds x 4 test acquisitions
+
+For each outer fold:
+    4 CSV  -> TEST
+   16 CSV  -> development
+             |-- 12 TRAIN
+             `--  4 VALIDATION
 ```
+
+The outer fold assignment is deterministic (`outer_split_seed: 2026`). Inner
+train/validation assignment is also fixed per outer fold and does not change across
+models or training seeds.
+
+No windows from one acquisition can cross train/validation/test boundaries. The
+`NODO1...NODO5` storage directories are ignored by the split algorithm.
+
+For each outer fold:
+
+- scaler: inner-training pre-onset samples only;
+- training: inner-training acquisitions only;
+- early stopping: inner-validation only;
+- decision threshold: selected on inner-validation only;
+- outer test: untouched until final evaluation.
+
+## Statistical reporting
+
+For metric `m`, repeated training seeds are first averaged within each outer acquisition
+fold:
+
+```text
+m_bar_fold(k) = mean over seeds for fold k
+```
+
+The paper reports:
+
+```text
+mu_CV       = mean of the five fold means
+sigma_fold  = sample std of the five fold means
+```
+
+Thus `mu_CV ± sigma_fold` describes variability across grouped acquisition folds, not
+across Bosch kits. Run-to-run seed variability is stored and reported separately.
+
+The paper should compare **models**, not storage directories. Per-fold outputs are
+retained for reproducibility/diagnostics but are not interpreted as physical-node
+comparisons.
 
 ## Dataset
 
-Use the public **Dataset Smoke Detection**, Mendeley Data, Version 1 (2026), DOI
+Use **M. Anedda, “Dataset Smoke Detection,” Mendeley Data, Version 1, 2026**, DOI
 `10.17632/48j7mm8k56.1`.
 
-Expected layout:
+The original archive layout can be kept unchanged:
 
 ```text
 data/raw/
@@ -156,6 +153,8 @@ data/raw/
 └── NODO5/
 ```
 
+These folder names are storage/development-kit metadata only.
+
 ## Installation
 
 ```bash
@@ -165,9 +164,7 @@ pip install -e .
 python tests/smoke_test.py
 ```
 
-## 0. Audit the real dataset before training
-
-Run this first:
+## 0. Audit the real dataset
 
 ```bash
 python scripts/dataset_audit.py \
@@ -175,11 +172,12 @@ python scripts/dataset_audit.py \
   --strict-public
 ```
 
-For Mendeley Data Version 1, the strict check must confirm:
+Strict Version-1 checks include:
 
 ```text
-20 CSV files
-5 nodes
+20 acquisition CSV files
+5 storage/development-kit groups (metadata only)
+17 documented heater profiles
 131370 raw rows
 23877 warm-up rows
 107493 annotated rows
@@ -190,66 +188,92 @@ For Mendeley Data Version 1, the strict check must confirm:
 19 evaluable events for W=60
 ```
 
-Do not start publication runs if the strict audit fails.
+## 1. Preflight the grouped CV
 
-## 1. Full LONO evaluation
-
-Reference FT-64 run:
+Run this before any publication training:
 
 ```bash
-python scripts/run_lono.py \
+python scripts/cv_preflight.py \
+  --data data/raw \
+  --output runs/preflight
+```
+
+The preflight verifies that:
+
+- each of the 20 acquisitions appears exactly once as outer test;
+- five outer folds contain four acquisition files each;
+- train/validation/test file sets are disjoint;
+- no split is empty or one-class;
+- outer-test physical/evaluable totals sum to 20/19 for `W=60`.
+
+It also saves `cv_fold_manifest.csv`.
+
+## 2. Grouped-CV predictive evaluation
+
+Reference FT-64:
+
+```bash
+python scripts/run_grouped_cv.py \
   --data data/raw \
   --models ft64 \
-  --seeds 1 2 3 4 5 6 7 8 9 10
+  --seeds 1 2 3 4 5 6 7 8 9 10 \
+  --device cuda \
+  --output runs/grouped_cv_ft64
 ```
 
-Main paper comparison:
+Main model comparison:
 
 ```bash
-python scripts/run_lono.py \
+python scripts/run_grouped_cv.py \
   --data data/raw \
   --models ft64 ft128 bilstm_bce bilstm_fl \
-  --seeds 1 2 3 4 5 6 7 8 9 10
+  --seeds 1 2 3 4 5 6 7 8 9 10 \
+  --device cuda \
+  --output runs/grouped_cv_main
 ```
 
-FT-32 can also be evaluated under the same LONO implementation:
+FT-32 remains the compact prospective node-edge configuration and may be evaluated
+separately if desired.
 
-```bash
-python scripts/run_lono.py \
-  --data data/raw \
-  --models ft32 \
-  --seeds 1 2 3
+Main generated files:
+
+```text
+cv_fold_manifest.csv
+cv_runs.csv
+cv_per_fold_summary.csv
+cv_per_fold_means.csv
+cv_macro_summary.csv
+cv_seed_std_by_fold.csv
+cv_seed_variability.csv
 ```
 
-FT-32 is retained primarily as the compact prospective node-edge configuration; FT-64
-remains the reference model used for full LONO and horizon-sensitivity analyses.
-
-### Statistical aggregation convention
-
-For each held-out node, metrics are first averaged across independent training seeds.
-The macro mean is then computed across the five node-wise means, while
-`sigma_node` is their sample standard deviation. Seed-level variability is reported
-separately.
-
-The event denominator is not silently inferred from existing positive windows. The
-pipeline explicitly stores both physical and evaluable events. With `W=60`, NODO1–4
-contain 4 physical / 4 evaluable events each, while NODO5 contains 4 physical / 3
-evaluable events.
-
-## 2. Horizon sensitivity
+## 3. Prediction-horizon sensitivity
 
 ```bash
 python scripts/horizon_sweep.py \
   --data data/raw \
   --model ft64 \
   --horizons 5 15 30 60 \
-  --seeds 1 2 3
+  --seeds 1 2 3 \
+  --device cuda
 ```
 
-`H` is a number of future observations. Use `lead_mean_s` for a common physical-time
-interpretation across heater profiles.
+`H` is a number of future observations; use timestamp-based lead time for physical-time
+interpretation.
 
-## 3. Computational complexity
+## 4. Paper table rows
+
+After the full main comparison:
+
+```bash
+python scripts/make_paper_tables.py \
+  --cv runs/grouped_cv_main/cv_runs.csv \
+  --output runs/grouped_cv_main/model_table_rows.tex
+```
+
+The generated rows report `mean ± sigma_fold` for each model.
+
+## 5. Computational complexity
 
 ```bash
 python scripts/complexity.py --output runs/complexity.csv
@@ -265,6 +289,7 @@ These are analytical quantities, not hardware measurements.
 
 ## Results policy
 
-This repository intentionally contains no estimated or provisional experimental
-results. Only analytical architecture quantities are pre-populated. LONO, horizon,
-latency, power, and energy values must come from actual executions or measurements.
+The repository contains no estimated or provisional predictive results. Previous LONO
+runs based on the five storage directories are **invalid for the intended experimental
+interpretation and must not be reported**. Publication values must be regenerated using
+`run_grouped_cv.py`.

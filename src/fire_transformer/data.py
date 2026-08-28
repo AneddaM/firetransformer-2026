@@ -1,6 +1,11 @@
 """Leakage-controlled data preparation for physical-onset early warning.
 
-The public BME688/BME690 dataset is interpreted as a state sequence:
+The public BME688/BME690 dataset is interpreted as a sequence of *acquisitions*.
+The directory labels NODO1...NODO5 identify Bosch development-kit/storage groups used
+while collecting and saving the files; they are metadata only and are never used as
+cross-validation groups or as model inputs.
+
+Raw acquisition states:
 
     label 0             -> sensor warm-up/stabilization (excluded)
     label 1001          -> valid pre-fire state
@@ -13,12 +18,13 @@ portion of an acquisition. Active-fire and post-fire observations are retained o
 metadata for state validation and are never used as model input windows.
 
 Leakage-control principles:
-1) outer split is by physical node;
-2) inner validation split is by complete acquisition file;
-3) rolling features are computed independently per acquisition file;
-4) MinMaxScaler is fitted only on eligible inner-training pre-onset samples;
-5) sliding windows are created independently per acquisition after the split;
-6) event coverage uses an explicit set of evaluable physical onset events.
+1) the outer split is grouped by complete acquisition CSV, never by NODO directory;
+2) every acquisition appears in exactly one outer test fold;
+3) inner validation is also split by complete acquisition file;
+4) rolling features are computed independently per acquisition file;
+5) MinMaxScaler is fitted only on eligible inner-training pre-onset samples;
+6) sliding windows are created independently per acquisition after the split;
+7) event coverage uses an explicit set of evaluable physical onset events.
 """
 from __future__ import annotations
 
@@ -43,27 +49,26 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(s).lower())
 
 
-def infer_node(path: str | Path) -> str:
-    s = str(path).upper()
+def infer_storage_group(path: str | Path) -> str:
+    """Return the acquisition storage/development-kit group for traceability only.
+
+    The public archive uses NODO1...NODO5 directories. This metadata must not be used
+    to define train/test domains or to claim cross-node generalization.
+    """
+    p = Path(path)
+    s = str(p).upper()
     for i in range(1, 6):
         if f"NODO{i}" in s or f"NODE{i}" in s:
             return f"NODO{i}"
-    raise ValueError(
-        f"Cannot infer node from '{path}'. Put files inside NODO1...NODO5 folders "
-        "or rename paths so the node identifier is present."
-    )
+    return p.parent.name or "UNSPECIFIED"
 
-def infer_filename_profile_index(path: str | Path) -> int | None:
-    """Extract the profile index appearing in the acquisition filename.
 
-    This value identifies the `profilo_X` token used in the CSV filename.
-    It must not be interpreted as the global BME688 heater-profile identity:
-    the public acquisition campaign contains 17 documented heater profiles,
-    whereas the filenames use indices 1...4 for the four acquisition files
-    associated with each node.
+def infer_filename_slot_index(path: str | Path) -> int | None:
+    """Extract the numeric `profilo_X` token from the CSV filename.
 
-    The filename profile index is metadata only and is never used as a model
-    input feature.
+    The public filenames reuse small indices inside storage groups. This token is not a
+    global Bosch heater-profile identifier and is never used as an ML feature or split
+    variable. The campaign itself documents 17 heater profiles across 20 acquisitions.
     """
     m = re.search(
         r"profilo[\s_\-]*(\d+)",
@@ -71,7 +76,6 @@ def infer_filename_profile_index(path: str | Path) -> int | None:
         flags=re.IGNORECASE,
     )
     return int(m.group(1)) if m else None
-
 
 
 def list_csvs(root: str | Path):
@@ -123,10 +127,7 @@ def resolve_schema(df: pd.DataFrame, schema_cfg: dict):
 
 
 def decode_label_tags(series: pd.Series, schema_cfg: dict):
-    """Decode raw label_tag values into acquisition-state codes.
-
-    Unknown label values raise rather than being silently mapped to fire/non-fire.
-    """
+    """Decode raw label_tag values into acquisition-state codes."""
     numeric = pd.to_numeric(series, errors="coerce")
     if numeric.isna().any():
         raise ValueError("NaN or non-numeric values found in label_tag")
@@ -157,20 +158,13 @@ def parse_timestamps(
     n: int,
     scale: float = 1.0,
 ):
-    """Parse timestamps and express numeric values in seconds using `scale`.
-
-    For the public dataset `timestamp_since_poweron` is in milliseconds and the
-    configuration therefore uses `timestamp_scale: 0.001`.
-    """
+    """Parse timestamps and express numeric values in seconds using `scale`."""
     if series is None:
         return np.arange(n, dtype=np.float64)
 
     numeric = pd.to_numeric(series, errors="coerce")
     if numeric.notna().mean() > 0.95:
-        arr = (
-            numeric.interpolate(limit_direction="both")
-            .to_numpy(dtype=np.float64)
-        )
+        arr = numeric.interpolate(limit_direction="both").to_numpy(dtype=np.float64)
         return arr * float(scale)
 
     dt = pd.to_datetime(series, errors="coerce", utc=True)
@@ -213,15 +207,7 @@ def validate_state_sequence(
     path: str | Path,
     schema_cfg: dict,
 ):
-    """Validate the experimental state machine and return warm-up/onset indices.
-
-    Returns
-    -------
-    first_valid_raw_index:
-        Index of the first non-warm-up sample in the raw acquisition.
-    onset_index_after_warmup:
-        Physical onset index after removal of the warm-up block.
-    """
+    """Validate the experimental state machine and return warm-up/onset indices."""
     labels = np.asarray(labels, dtype=np.int64)
     states = np.asarray(states, dtype=np.int8)
 
@@ -259,13 +245,10 @@ def validate_state_sequence(
 
     if onset_idx <= 0:
         raise ValueError(f"{path}: no observed pre-fire sample before onset")
-
     if np.any(states_valid[:onset_idx] != STATE_PREFIRE):
         raise ValueError(f"{path}: unexpected acquisition state before physical onset")
-
     if states_valid[onset_idx] != STATE_FIRE:
         raise ValueError(f"{path}: physical onset does not enter active-fire state")
-
     if np.any(states_valid[onset_idx:] == STATE_PREFIRE):
         raise ValueError(f"{path}: pre-fire state reappears after physical onset")
 
@@ -282,8 +265,8 @@ def validate_state_sequence(
 class Acquisition:
     path: Path
     file_id: str
-    node: str
-    filename_profile_index: int | None
+    storage_group: str
+    filename_slot_index: int | None
     raw: pd.DataFrame
     labels: np.ndarray
     states: np.ndarray
@@ -350,8 +333,6 @@ class DatasetCatalog:
                 }
             )
 
-            # The public release has valid values for all four canonical channels.
-            # Fail loudly instead of introducing an undocumented sample-removal rule.
             invalid_feature_rows = ~canonical.notna().all(axis=1)
             if invalid_feature_rows.any():
                 raise ValueError(
@@ -360,14 +341,10 @@ class DatasetCatalog:
                 )
 
             labels_all, states_all = decode_label_tags(
-                df[mapping["label"]],
-                schema_cfg,
+                df[mapping["label"]], schema_cfg
             )
             first_valid, onset_idx = validate_state_sequence(
-                labels_all,
-                states_all,
-                p,
-                schema_cfg,
+                labels_all, states_all, p, schema_cfg
             )
 
             ts_all = parse_timestamps(
@@ -378,7 +355,6 @@ class DatasetCatalog:
             if len(ts_all) > 1 and np.any(np.diff(ts_all) <= 0):
                 raise ValueError(f"{p}: timestamps are not strictly increasing")
 
-            # Remove only the initial warm-up/stabilization block.
             canonical = canonical.iloc[first_valid:].reset_index(drop=True)
             labels = labels_all[first_valid:]
             states = states_all[first_valid:]
@@ -394,8 +370,8 @@ class DatasetCatalog:
                 Acquisition(
                     path=p,
                     file_id=p.relative_to(self.root).as_posix(),
-                    node=infer_node(p),
-                    filename_profile_index=infer_filename_profile_index(p),
+                    storage_group=infer_storage_group(p),
+                    filename_slot_index=infer_filename_slot_index(p),
                     raw=canonical,
                     labels=labels,
                     states=states,
@@ -411,12 +387,132 @@ class DatasetCatalog:
         if not self.acquisitions:
             raise FileNotFoundError(f"No usable CSV files found under {self.root}")
 
-    @property
-    def nodes(self):
-        return sorted({a.node for a in self.acquisitions})
+        ids = [a.file_id for a in self.acquisitions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate acquisition file identifiers found")
 
-    def by_node(self, node):
-        return [a for a in self.acquisitions if a.node == node]
+    @property
+    def storage_groups(self):
+        return sorted({a.storage_group for a in self.acquisitions})
+
+    def by_file_id(self, file_id: str) -> Acquisition:
+        for acq in self.acquisitions:
+            if acq.file_id == file_id:
+                return acq
+        raise KeyError(file_id)
+
+
+def make_outer_folds(
+    catalog: DatasetCatalog,
+    n_splits: int = 5,
+    split_seed: int = 2026,
+):
+    """Create deterministic grouped outer folds over complete acquisition files.
+
+    Storage/development-kit directories and filename profile tokens are deliberately
+    ignored. The unit of splitting is the acquisition CSV itself.
+    """
+    acquisitions = sorted(catalog.acquisitions, key=lambda a: a.file_id)
+    n = len(acquisitions)
+
+    if n_splits < 2:
+        raise ValueError("n_splits must be at least 2")
+    if n < n_splits:
+        raise ValueError(f"Need at least {n_splits} acquisitions, found {n}")
+
+    order = np.arange(n)
+    rng = np.random.default_rng(int(split_seed))
+    rng.shuffle(order)
+
+    fold_indices = np.array_split(order, n_splits)
+    folds = tuple(
+        tuple(acquisitions[int(i)] for i in indices)
+        for indices in fold_indices
+    )
+
+    assigned = [a.file_id for fold in folds for a in fold]
+    if len(assigned) != n or set(assigned) != {a.file_id for a in acquisitions}:
+        raise RuntimeError("Outer-fold construction did not partition acquisitions exactly once")
+
+    return folds
+
+
+def outer_fold_manifest(
+    catalog: DatasetCatalog,
+    n_splits: int = 5,
+    split_seed: int = 2026,
+    window: int = 60,
+) -> pd.DataFrame:
+    rows = []
+    for fold_index, fold in enumerate(
+        make_outer_folds(catalog, n_splits=n_splits, split_seed=split_seed),
+        start=1,
+    ):
+        for acq in fold:
+            rows.append(
+                {
+                    "outer_fold": fold_index,
+                    "file_id": acq.file_id,
+                    "storage_group": acq.storage_group,
+                    "filename_slot_index": acq.filename_slot_index,
+                    "physical_events": 1,
+                    "evaluable_events": int(acq.pre_onset_samples >= window),
+                    "pre_onset_samples": acq.pre_onset_samples,
+                    "onset_time_s": acq.onset_timestamp,
+                }
+            )
+    return pd.DataFrame(rows).sort_values(["outer_fold", "file_id"]).reset_index(drop=True)
+
+
+def split_outer_inner(
+    catalog: DatasetCatalog,
+    outer_fold: int,
+    n_splits: int = 5,
+    outer_split_seed: int = 2026,
+    val_fraction_files: float = 0.25,
+    inner_split_seed: int = 1337,
+):
+    """Split by acquisition file: outer test fold, then grouped inner train/validation."""
+    folds = make_outer_folds(
+        catalog,
+        n_splits=n_splits,
+        split_seed=outer_split_seed,
+    )
+
+    if outer_fold < 1 or outer_fold > len(folds):
+        raise ValueError(f"outer_fold must be in 1..{len(folds)}")
+
+    test = list(folds[outer_fold - 1])
+    test_ids = {a.file_id for a in test}
+    dev = sorted(
+        [a for a in catalog.acquisitions if a.file_id not in test_ids],
+        key=lambda a: a.file_id,
+    )
+
+    if not test or not dev:
+        raise ValueError("Outer split produced an empty development or test set")
+
+    n_val = max(1, int(round(len(dev) * float(val_fraction_files))))
+    if n_val >= len(dev):
+        raise ValueError("Validation fraction leaves no inner-training acquisitions")
+
+    idx = np.arange(len(dev))
+    rng = np.random.default_rng(int(inner_split_seed))
+    rng.shuffle(idx)
+    val_idx = set(idx[:n_val].tolist())
+
+    train, val = [], []
+    for i, acq in enumerate(dev):
+        (val if i in val_idx else train).append(acq)
+
+    train_ids = {a.file_id for a in train}
+    val_ids = {a.file_id for a in val}
+    if train_ids & val_ids or train_ids & test_ids or val_ids & test_ids:
+        raise RuntimeError("Acquisition leakage detected across train/validation/test")
+    if train_ids | val_ids | test_ids != {a.file_id for a in catalog.acquisitions}:
+        raise RuntimeError("Split does not cover the complete acquisition set")
+
+    return train, val, test
 
 
 def enrich(raw: pd.DataFrame, rolling_window=5) -> pd.DataFrame:
@@ -434,45 +530,6 @@ def enrich(raw: pd.DataFrame, rolling_window=5) -> pd.DataFrame:
         feats.append(obj.reset_index(drop=True))
 
     return pd.concat(feats, axis=1)
-
-
-def split_outer_inner(
-    catalog: DatasetCatalog,
-    heldout_node: str,
-    val_fraction_files=0.25,
-    split_seed=1337,
-):
-    test = [a for a in catalog.acquisitions if a.node == heldout_node]
-    dev = [a for a in catalog.acquisitions if a.node != heldout_node]
-
-    if not test:
-        raise ValueError(f"No acquisitions found for held-out node {heldout_node}")
-
-    train, val = [], []
-    rng = np.random.default_rng(split_seed)
-
-    for node in sorted({a.node for a in dev}):
-        node_files = [a for a in dev if a.node == node]
-        idx = np.arange(len(node_files))
-        rng.shuffle(idx)
-
-        n_val = (
-            max(1, int(round(len(node_files) * val_fraction_files)))
-            if len(node_files) > 1
-            else 0
-        )
-        val_idx = set(idx[:n_val].tolist())
-
-        for i, acq in enumerate(node_files):
-            (val if i in val_idx else train).append(acq)
-
-    if not train or not val:
-        raise ValueError(
-            "Need at least two acquisition files among development nodes "
-            "for grouped train/validation split"
-        )
-
-    return train, val, test
 
 
 def fit_feature_scaler(
@@ -519,12 +576,7 @@ def make_windows_one(
     window=60,
     horizon=15,
 ):
-    """Generate physical-onset warning windows from one acquisition.
-
-    Every input window ends strictly before the first physical 1001->1002 onset.
-    A target is positive iff that onset occurs within the next H observations.
-    Active-fire and post-fire/recovery observations never enter model inputs.
-    """
+    """Generate physical-onset warning windows from one acquisition."""
     if window <= 0 or horizon <= 0:
         raise ValueError("window and horizon must be positive")
 
@@ -596,18 +648,22 @@ def concat_bundles(bundles):
 
 def build_fold(
     catalog,
-    heldout_node,
+    outer_fold,
     rolling_window=5,
     window=60,
     horizon=15,
     val_fraction_files=0.25,
-    split_seed=1337,
+    n_splits=5,
+    outer_split_seed=2026,
+    inner_split_seed=1337,
 ):
     train_a, val_a, test_a = split_outer_inner(
         catalog,
-        heldout_node,
-        val_fraction_files,
-        split_seed,
+        outer_fold=outer_fold,
+        n_splits=n_splits,
+        outer_split_seed=outer_split_seed,
+        val_fraction_files=val_fraction_files,
+        inner_split_seed=inner_split_seed,
     )
 
     scaler, feature_names = fit_feature_scaler(

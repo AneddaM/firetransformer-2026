@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "firetransformer-wfiot"
-version = "2.1.0"
-description = "Physical-onset leakage-controlled FireTransformer evaluation for horizon-based wildfire early warning in IoT sensor networks"
+version = "3.0.0"
+description = "Acquisition-level grouped-CV FireTransformer for physical-onset wildfire early warning"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
