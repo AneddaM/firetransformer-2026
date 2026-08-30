@@ -293,3 +293,12 @@ The repository contains no estimated or provisional predictive results. Previous
 runs based on the five storage directories are **invalid for the intended experimental
 interpretation and must not be reported**. Publication values must be regenerated using
 `run_grouped_cv.py`.
+
+## Acknowledgments
+
+This repository builds on the joint development of the FireTransformer
+framework. We gratefully acknowledge **Chiara Matta** for her contributions
+to the original FireTransformer implementation and experimental development.
+
+The related repository and research resources maintained by Chiara Matta
+are available at github.com/ChiaraMatta/wildfire-early-warning-transformer.
